@@ -834,11 +834,31 @@
     // ========== Citation Submission ==========
 
     function submitCitation(isFootnote) {
-        if (!state.selectedItems.length && state.selectedIndex >= 0 && state.searchResults[state.selectedIndex]) {
-            state.selectedItems.push(state.searchResults[state.selectedIndex]);
+        if (!state.selectedItems.length) {
+            if (state.selectedIndex >= 0 && state.searchResults[state.selectedIndex]) {
+                state.selectedItems.push(state.searchResults[state.selectedIndex]);
+            } else if (state.searchResults && state.searchResults.length > 0) {
+                state.selectedItems.push(state.searchResults[0]);
+            }
         }
 
         if (!state.selectedItems.length) {
+            var rawQ = parseInlineShortcuts(els.searchInput.value).query.trim();
+            if (rawQ) {
+                clearTimeout(state.searchTimer);
+                showToast("Selecting matching reference...");
+                ZoteroAPI.searchItems(rawQ, state.activeLibrary, state.activeStyle).then(function (items) {
+                    if (items && items.length > 0) {
+                        state.selectedItems.push(items[0]);
+                        submitCitation(isFootnote);
+                    } else {
+                        showToast("No matching reference found for '" + rawQ + "'", true);
+                    }
+                }).catch(function (err) {
+                    showToast("Search error: " + err.message, true);
+                });
+                return;
+            }
             showToast("Please select a reference to insert.", true);
             return;
         }
@@ -853,9 +873,10 @@
         };
 
         var citationData = CitationManager.buildCitation(state.selectedItems, options);
+        var targetFieldId = state.editingField ? (state.editingField.fieldId || state.editingField.FieldId || (state.editingField.rawField && state.editingField.rawField.FieldId)) : null;
 
-        if (state.mode === "edit" && state.editingField) {
-            CitationManager.updateCitation(state.editingField.fieldId, citationData, state.activeStyle).then(function () {
+        if (state.mode === "edit" && targetFieldId) {
+            CitationManager.updateCitation(targetFieldId, citationData, state.activeStyle).then(function () {
                 closeModal();
             }).catch(function (err) {
                 showToast("Update failed: " + err.message, true);

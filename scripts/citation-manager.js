@@ -513,25 +513,45 @@ var CitationManager = (function () {
      */
     function applyFontToField(fieldId) {
         return new Promise(function (resolve) {
-            window.Asc.plugin.executeMethod("SelectAddinField", [fieldId], function () {
-                window.Asc.plugin.callCommand(function () {
-                    var oDocument = Api.GetDocument();
-                    var oRange = oDocument.GetRangeBySelect();
-                    if (oRange && oRange.SetFontFamily) {
-                        oRange.SetFontFamily("Times New Roman");
-                    }
-                }, false, true, function () {
-                    window.Asc.plugin.executeMethod("MoveCursorOutsideField", [fieldId, false], function () {
-                        resolve();
+            var finished = false;
+            var timer = setTimeout(function () {
+                if (!finished) {
+                    finished = true;
+                    resolve();
+                }
+            }, 600);
+
+            try {
+                window.Asc.plugin.executeMethod("SelectAddinField", [fieldId], function () {
+                    window.Asc.plugin.callCommand(function () {
+                        var oDocument = Api.GetDocument();
+                        var oRange = oDocument.GetRangeBySelect();
+                        if (oRange && oRange.SetFontFamily) {
+                            oRange.SetFontFamily("Times New Roman");
+                        }
+                    }, false, true, function () {
+                        window.Asc.plugin.executeMethod("MoveCursorOutsideField", [fieldId, false], function () {
+                            if (!finished) {
+                                finished = true;
+                                clearTimeout(timer);
+                                resolve();
+                            }
+                        });
                     });
                 });
-            });
+            } catch (e) {
+                if (!finished) {
+                    finished = true;
+                    clearTimeout(timer);
+                    resolve();
+                }
+            }
         });
     }
 
     /**
      * Insert citation into document, strictly setting Times New Roman font,
-     * syncing document style, and awaiting autoUpgradeBibliography
+     * syncing document style, and kicking off autoUpgradeBibliography in the background
      */
     function insertCitation(citationData, isFootnote, activeStyle) {
         var fieldId = "ZOTERO_" + Date.now();
@@ -556,6 +576,8 @@ var CitationManager = (function () {
                             var targetId = (addedField && addedField.FieldId) ? addedField.FieldId : addinField.FieldId;
                             applyFontToField(targetId).then(function () {
                                 resolve(addinField);
+                            }).catch(function () {
+                                resolve(addinField);
                             });
                         });
                     });
@@ -573,6 +595,8 @@ var CitationManager = (function () {
                             var targetId = (addedField && addedField.FieldId) ? addedField.FieldId : addinField.FieldId;
                             applyFontToField(targetId).then(function () {
                                 resolve(addinField);
+                            }).catch(function () {
+                                resolve(addinField);
                             });
                         });
                     });
@@ -585,9 +609,10 @@ var CitationManager = (function () {
             var newKeys = (citationData.citationObj.citationItems || []).map(function (it) {
                 return getItemKey(it);
             });
-            return autoUpgradeBibliography(activeStyle, newKeys).then(function () {
-                return result;
-            });
+            setTimeout(function () {
+                autoUpgradeBibliography(activeStyle, newKeys);
+            }, 50);
+            return result;
         });
     }
 
@@ -608,9 +633,12 @@ var CitationManager = (function () {
                     var extraKeys = (citationData.citationObj.citationItems || []).map(function (it) {
                         return getItemKey(it);
                     });
-                    autoUpgradeBibliography(activeStyle, extraKeys).then(function () {
-                        resolve(updatedField);
-                    });
+                    setTimeout(function () {
+                        autoUpgradeBibliography(activeStyle, extraKeys);
+                    }, 50);
+                    resolve(updatedField);
+                }).catch(function () {
+                    resolve(updatedField);
                 });
             });
         });
@@ -622,7 +650,10 @@ var CitationManager = (function () {
     function removeCitation(fieldId, activeStyle) {
         return new Promise(function (resolve) {
             window.Asc.plugin.executeMethod("RemoveAddinField", [fieldId], function () {
-                autoUpgradeBibliography(activeStyle).then(resolve);
+                setTimeout(function () {
+                    autoUpgradeBibliography(activeStyle);
+                }, 50);
+                resolve();
             });
         });
     }
@@ -724,9 +755,67 @@ var CitationManager = (function () {
      */
     function updateBibliographyInDoc(htmlBib, entries, bibInfo) {
         return new Promise(function (resolve, reject) {
-            var formattedHtml = prepareBibHtmlForPaste(htmlBib);
+            var bibLines = entries.map(function (e) {
+                return e.map(function (r) { return r.text; }).join("");
+            });
+            var allBibText = bibLines.join("\n\n");
 
-            // Legacy ContentControl update branch
+            // 1. If an AddinField exists in document (Word format from Manu.docx or previous save):
+            if (bibInfo && bibInfo.type === "addinField" && bibInfo.field && bibInfo.field.FieldId) {
+                var updatedBibField = {
+                    FieldId: bibInfo.field.FieldId,
+                    Value: bibInfo.field.Value || BIB_PREFIX,
+                    Content: allBibText
+                };
+
+                var finished = false;
+                var timeout = setTimeout(function () {
+                    if (!finished) {
+                        finished = true;
+                        resolve(entries.length);
+                    }
+                }, 1200);
+
+                try {
+                    window.Asc.plugin.executeMethod("UpdateAddinFields", [[updatedBibField]], function () {
+                        window.Asc.scope.bibEntries = entries;
+                        window.Asc.plugin.callCommand(function () {
+                            var doc = Api.GetDocument();
+                            var paras = doc.GetAllParagraphs();
+                            var inRef = false;
+                            for (var p = 0; p < paras.length; p++) {
+                                var text = paras[p].GetText().trim();
+                                if (!inRef) {
+                                    if (/^(references|bibliography|参考文献)\b/i.test(text)) {
+                                        inRef = true;
+                                    }
+                                } else {
+                                    paras[p].SetFontFamily("Times New Roman");
+                                    paras[p].SetIndLeft(720);        // 0.5" hanging indent
+                                    paras[p].SetIndFirstLine(-720);  // -0.5" first line
+                                    paras[p].SetSpacingAfter(140);
+                                    paras[p].SetSpacingLine(276, "multiple");
+                                }
+                            }
+                        }, false, true, function () {
+                            if (!finished) {
+                                finished = true;
+                                clearTimeout(timeout);
+                                resolve(entries.length);
+                            }
+                        });
+                    });
+                } catch (e) {
+                    if (!finished) {
+                        finished = true;
+                        clearTimeout(timeout);
+                        resolve(entries.length);
+                    }
+                }
+                return;
+            }
+
+            // 2. If a ContentControl exists (ONLYOFFICE BlockLvlSdt format):
             if (bibInfo && bibInfo.type === "contentControl") {
                 window.Asc.scope.bibEntries = entries;
                 window.Asc.plugin.callCommand(function () {
@@ -759,37 +848,37 @@ var CitationManager = (function () {
                 return;
             }
 
-            // Word-compatible AddinField branch
-            function doInsertAddinBib(targetFieldId) {
-                var bibField = {
-                    FieldId: targetFieldId || ("ZOTERO_BIBL_" + Date.now()),
-                    Value: BIB_PREFIX,
-                    Content: " "
-                };
+            // 3. If neither exists (brand new document insertion):
+            window.Asc.scope.bibEntries = entries;
+            window.Asc.plugin.callCommand(function () {
+                var oDocument = Api.GetDocument();
+                var entries = Asc.scope.bibEntries;
+                var oBlockLvlSdt = Api.CreateBlockLvlSdt();
+                oBlockLvlSdt.SetTag("ZOTERO_BIBLIOGRAPHY");
+                oBlockLvlSdt.SetAlias("Zotero Bibliography");
 
-                window.Asc.plugin.executeMethod("AddAddinField", [bibField], function () {
-                    window.Asc.plugin.callCommand(function () {
-                        var doc = Api.GetDocument();
-                        doc.MoveCursorLeft(1, true);
-                    }, false, true, function () {
-                        window.Asc.plugin.executeMethod("PasteHtml", [formattedHtml], function () {
-                            applyBibParagraphFormatting().then(function () {
-                                resolve(entries ? entries.length : 1);
-                            });
-                        });
-                    });
-                });
-            }
+                for (var i = 0; i < entries.length; i++) {
+                    var oParagraph = Api.CreateParagraph();
+                    oParagraph.SetFontFamily("Times New Roman");
+                    oParagraph.SetIndLeft(720);
+                    oParagraph.SetIndFirstLine(-720);
+                    oParagraph.SetSpacingAfter(140);
+                    oParagraph.SetSpacingLine(276, "multiple");
 
-            if (bibInfo && bibInfo.type === "addinField" && bibInfo.field && bibInfo.field.FieldId) {
-                window.Asc.plugin.executeMethod("SelectAddinField", [bibInfo.field.FieldId], function () {
-                    window.Asc.plugin.executeMethod("RemoveSelectedContent", null, function () {
-                        doInsertAddinBib(bibInfo.field.FieldId);
-                    });
-                });
-            } else {
-                doInsertAddinBib("ZOTERO_BIBL_" + Date.now());
-            }
+                    var runs = entries[i];
+                    for (var j = 0; j < runs.length; j++) {
+                        var rData = runs[j];
+                        var oRun = oParagraph.AddText(rData.text);
+                        oRun.SetFontFamily("Times New Roman");
+                        if (rData.italic) oRun.SetItalic(true);
+                        if (rData.bold) oRun.SetBold(true);
+                    }
+                    oBlockLvlSdt.AddElement(oParagraph);
+                }
+                oDocument.InsertContent([oBlockLvlSdt]);
+            }, false, true, function () {
+                resolve(entries ? entries.length : 1);
+            });
         });
     }
 
@@ -799,11 +888,6 @@ var CitationManager = (function () {
      */
     function insertBibliography(style) {
         return getBibliographyInfo().then(function (existingInfo) {
-            if (existingInfo) {
-                // Bibliography exists -> Perform full on-demand live refresh across document!
-                return reformatDocumentStyle(style);
-            }
-
             return getAllCitationFields().then(function (fields) {
                 if (!fields.length) {
                     throw new Error("No citations found in document. Insert at least one citation first.");
@@ -832,7 +916,7 @@ var CitationManager = (function () {
                     }
 
                     setDocumentZoteroStyle(style);
-                    return updateBibliographyInDoc(htmlBib, entries, null);
+                    return updateBibliographyInDoc(htmlBib, entries, existingInfo);
                 });
             });
         });
@@ -952,14 +1036,11 @@ var CitationManager = (function () {
                 if (updatedFields.length > 0) {
                     return new Promise(function (resolve) {
                         window.Asc.plugin.executeMethod("UpdateAddinFields", [updatedFields], function () {
-                            var promises = updatedFields.map(function (f) {
-                                return applyFontToField(f.FieldId);
-                            });
-                            Promise.all(promises).then(function () {
-                                setDocumentZoteroStyle(newStyle);
-                                autoUpgradeBibliography(newStyle, allKeys).then(function () {
-                                    resolve(updatedFields.length);
-                                });
+                            setDocumentZoteroStyle(newStyle);
+                            autoUpgradeBibliography(newStyle, allKeys).then(function () {
+                                resolve(updatedFields.length);
+                            }).catch(function () {
+                                resolve(updatedFields.length);
                             });
                         });
                     });
