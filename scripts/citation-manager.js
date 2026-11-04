@@ -682,7 +682,25 @@ var CitationManager = (function () {
     }
 
     /**
+     * Decode HTML entities and clean Unicode directional isolates without stripping inter-tag spaces
+     */
+    function cleanNodeText(str) {
+        if (!str) return "";
+        return str
+            .replace(/&#38;/g, "&")
+            .replace(/&amp;/g, "&")
+            .replace(/&#60;/g, "<")
+            .replace(/&lt;/g, "<")
+            .replace(/&#62;/g, ">")
+            .replace(/&gt;/g, ">")
+            .replace(/[\u2066-\u206f\u200b-\u200f]/g, "")
+            .replace(/\r?\n|\r/g, " ")
+            .replace(/[ \t]+/g, " ");
+    }
+
+    /**
      * Parse HTML bibliography entries into text runs with formatting (italics, bold)
+     * Preserves interstitial spaces between plain text and formatted elements (e.g. "Review. <i>RELC Journal</i>, <i>57</i>").
      */
     function parseBibHtml(html) {
         var div = document.createElement("div");
@@ -702,7 +720,7 @@ var CitationManager = (function () {
 
             function walk(node, isItalic, isBold) {
                 if (node.nodeType === Node.TEXT_NODE) {
-                    var text = cleanText(node.textContent);
+                    var text = cleanNodeText(node.textContent);
                     if (text && text.length > 0) {
                         runs.push({ text: text, italic: !!isItalic, bold: !!isBold });
                     }
@@ -719,7 +737,13 @@ var CitationManager = (function () {
 
             walk(entryNode, false, false);
             if (runs.length > 0) {
-                parsedEntries.push(runs);
+                // Clean boundary spaces for the overall entry without collapsing inter-run spacing
+                runs[0].text = runs[0].text.replace(/^\s+/, "");
+                runs[runs.length - 1].text = runs[runs.length - 1].text.replace(/\s+$/, "");
+                runs = runs.filter(function (r) { return r.text.length > 0; });
+                if (runs.length > 0) {
+                    parsedEntries.push(runs);
+                }
             }
         });
 
