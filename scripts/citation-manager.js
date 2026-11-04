@@ -1,13 +1,15 @@
 /**
  * Zotero QuickCite - Citation & Document Manager
- * Manages Word-compatible AddinFields, CSL formatting, hanging indents (悬挂缩进),
- * ubiquitous narrative citations (with multi-language author switching like 'Yan et al. (2026)' <-> '严等 (2026)'),
+ * Full Word-compatible AddinField and Document Property integration.
+ * Compatible with files created or edited by Microsoft Word official Zotero plugin,
+ * CSL formatting, hanging indents (悬挂缩进), ubiquitous narrative citations,
  * automatic bibliography upgrades, and document-wide style changes in Times New Roman.
  */
 var CitationManager = (function () {
     "use strict";
 
     var CIT_PREFIX = "ZOTERO_ITEM CSL_CITATION";
+    var BIB_PREFIX = "ZOTERO_BIBL {\"uncited\":[],\"omitted\":[],\"custom\":[]} CSL_BIBLIOGRAPHY";
 
     function generateId() {
         return Math.random().toString(36).substring(2, 10);
@@ -28,6 +30,90 @@ var CitationManager = (function () {
             .replace(/[\u2066-\u206f\u200b-\u200f]/g, "")
             .replace(/\s+/g, " ")
             .trim();
+    }
+
+    /**
+     * Resolve the alphanumeric Zotero item key from any citation item structure:
+     * - item.key
+     * - item.uris array (e.g. "http://zotero.org/users/8437599/items/VTPUUB69")
+     * - item.uri
+     * - 8-char alphanumeric item.id
+     * - item.itemData.key
+     */
+    function getItemKey(item) {
+        if (!item) return "";
+        if (item.key) return String(item.key);
+        if (Array.isArray(item.uris) && item.uris.length > 0) {
+            for (var i = 0; i < item.uris.length; i++) {
+                var m = String(item.uris[i]).match(/\/items\/([A-Za-z0-9]+)/);
+                if (m && m[1]) return m[1];
+            }
+        }
+        if (item.uri) {
+            var m2 = String(item.uri).match(/\/items\/([A-Za-z0-9]+)/);
+            if (m2 && m2[1]) return m2[1];
+        }
+        if (typeof item.id === "string" && /^[A-Za-z0-9]{8}$/.test(item.id)) {
+            return item.id;
+        }
+        if (item.itemData && item.itemData.key) {
+            return String(item.itemData.key);
+        }
+        return item.id ? String(item.id) : "";
+    }
+
+    /**
+     * Fallback item reconstructor from CSL-JSON itemData (for items cited from external libraries or offline)
+     */
+    function createItemFromItemData(citItem, key) {
+        var d = (citItem && citItem.itemData) || {};
+        var authors = "";
+        if (Array.isArray(d.author) && d.author.length > 0) {
+            var first = d.author[0];
+            var lastName = (first.family || first.name || "").trim();
+            if (d.author.length === 1) {
+                authors = lastName;
+            } else if (d.author.length === 2) {
+                var second = d.author[1];
+                authors = lastName + " & " + (second.family || second.name || "").trim();
+            } else {
+                authors = lastName + " et al.";
+            }
+        } else if (Array.isArray(d.creators) && d.creators.length > 0) {
+            var firstC = d.creators[0];
+            var lastC = (firstC.lastName || firstC.name || "").trim();
+            if (d.creators.length === 1) {
+                authors = lastC;
+            } else if (d.creators.length === 2) {
+                var secondC = d.creators[1];
+                authors = lastC + " & " + (secondC.lastName || secondC.name || "").trim();
+            } else {
+                authors = lastC + " et al.";
+            }
+        }
+
+        var year = "";
+        if (d.issued && d.issued["date-parts"] && d.issued["date-parts"][0]) {
+            year = String(d.issued["date-parts"][0][0] || "");
+        } else if (d.date) {
+            var my = String(d.date).match(/\b(19\d\d|20\d\d)\b/);
+            year = my ? my[1] : String(d.date);
+        }
+
+        var k = key || getItemKey(citItem) || String(citItem.id || "");
+        return {
+            key: k,
+            id: k,
+            itemType: d.type || d.itemType || "journalArticle",
+            title: cleanText(d.title || "[No title]"),
+            authors: authors || "Unknown",
+            year: year,
+            publication: cleanText(d["container-title"] || d.publicationTitle || d.publisher || ""),
+            citation: (citItem && (citItem.formattedCitation || (citItem.properties && citItem.properties.formattedCitation))) || "",
+            raw: { data: d },
+            itemData: d,
+            uris: citItem.uris || []
+        };
     }
 
     /**
@@ -76,7 +162,8 @@ var CitationManager = (function () {
                     if (Array.isArray(fields)) {
                         fields.forEach(function (f) {
                             if (f && f.Value && f.Value.indexOf("ZOTERO_ITEM") !== -1) {
-                                zoteroFields.push(parseCitationField(f));
+                                var parsed = parseCitationField(f);
+                                if (parsed) zoteroFields.push(parsed);
                             }
                         });
                     }
@@ -90,39 +177,139 @@ var CitationManager = (function () {
     }
 
     /**
-     * Check if a bibliography ContentControl exists in document
+     * Locate existing bibliography representation in document:
+     * Checks Word AddinField (ADDIN ZOTERO_BIBL / ZOTERO_BIBLIOGRAPHY) and ONLYOFFICE ContentControl (ZOTERO_BIBLIOGRAPHY)
      */
-    function hasBibliographyControl() {
+    function getBibliographyInfo() {
         return new Promise(function (resolve) {
             try {
-                window.Asc.plugin.executeMethod("GetAllContentControls", null, function (controls) {
-                    if (Array.isArray(controls) && controls.length > 0) {
-                        var found = controls.some(function (c) {
-                            return c && (c.Tag === "ZOTERO_BIBLIOGRAPHY" || c.InternalId === "ZOTERO_BIBLIOGRAPHY");
-                        });
-                        if (found) {
-                            resolve(true);
-                            return;
+                window.Asc.plugin.executeMethod("GetAllAddinFields", null, function (fields) {
+                    if (Array.isArray(fields)) {
+                        for (var i = 0; i < fields.length; i++) {
+                            var f = fields[i];
+                            if (f && f.Value && (f.Value.indexOf("ZOTERO_BIBL") !== -1 || f.Value.indexOf("ZOTERO_BIBLIOGRAPHY") !== -1)) {
+                                resolve({ type: "addinField", field: f });
+                                return;
+                            }
                         }
                     }
-                    resolve(false);
+                    window.Asc.plugin.executeMethod("GetAllContentControls", null, function (controls) {
+                        if (Array.isArray(controls)) {
+                            for (var j = 0; j < controls.length; j++) {
+                                var c = controls[j];
+                                if (c && (c.Tag === "ZOTERO_BIBLIOGRAPHY" || c.InternalId === "ZOTERO_BIBLIOGRAPHY")) {
+                                    resolve({ type: "contentControl", control: c });
+                                    return;
+                                }
+                            }
+                        }
+                        resolve(null);
+                    });
                 });
             } catch (e) {
-                resolve(false);
+                console.warn("getBibliographyInfo error:", e);
+                resolve(null);
             }
         });
     }
 
     /**
-     * Parse raw field into structured citation object
+     * Check if a bibliography exists in the document
+     */
+    function hasBibliography() {
+        return getBibliographyInfo().then(function (info) {
+            return info !== null;
+        });
+    }
+
+    /**
+     * Read embedded Zotero style preference from Word custom document properties (ZOTERO_PREF_1 / ZOTERO_PREF_2)
+     */
+    function getDocumentZoteroStyle() {
+        return new Promise(function (resolve) {
+            try {
+                window.Asc.plugin.callCommand(function () {
+                    var result = null;
+                    try {
+                        var doc = Api.GetDocument();
+                        if (doc && doc.GetCustomProperties) {
+                            var props = doc.GetCustomProperties();
+                            if (props && props.Get) {
+                                var p1 = props.Get("ZOTERO_PREF_1") || "";
+                                var p2 = props.Get("ZOTERO_PREF_2") || "";
+                                var combined = String(p1) + String(p2);
+                                var m = combined.match(/style\s+id=["'](?:http:\/\/www\.zotero\.org\/styles\/)?([^"']+)["']/i);
+                                if (m && m[1]) {
+                                    result = m[1];
+                                }
+                            }
+                        }
+                    } catch (e) {}
+                    return result;
+                }, false, true, function (styleId) {
+                    resolve(styleId || null);
+                });
+            } catch (e) {
+                resolve(null);
+            }
+        });
+    }
+
+    /**
+     * Save embedded Zotero style preference to Word custom document properties (ZOTERO_PREF_1 / ZOTERO_PREF_2)
+     * Ensures complete bidirectional compatibility when reopened in Word with official Zotero plugin.
+     */
+    function setDocumentZoteroStyle(styleId) {
+        if (!styleId) return Promise.resolve();
+        return new Promise(function (resolve) {
+            try {
+                window.Asc.scope.targetStyleId = styleId;
+                window.Asc.plugin.callCommand(function () {
+                    try {
+                        var doc = Api.GetDocument();
+                        if (doc && doc.GetCustomProperties) {
+                            var props = doc.GetCustomProperties();
+                            if (props && props.Add) {
+                                var cleanId = Asc.scope.targetStyleId.replace(/^http:\/\/www\.zotero\.org\/styles\//, "").trim();
+                                var fullStyleUrl = "http://www.zotero.org/styles/" + cleanId;
+                                var sessionId = Math.random().toString(36).substring(2, 10);
+                                var pref = '<data data-version="3" zotero-version="10.0.7"><session id="' + sessionId + '"/><style id="' + fullStyleUrl + '" locale="en-US" hasBibliography="1" bibliographyStyleHasBeenSet="1"/><prefs><pref name="fieldType" value="Field"/><pref name="automaticJournalAbbreviations" value="true"/></prefs></data>';
+                                if (pref.length > 250) {
+                                    props.Add("ZOTERO_PREF_1", pref.substring(0, 250));
+                                    props.Add("ZOTERO_PREF_2", pref.substring(250));
+                                } else {
+                                    props.Add("ZOTERO_PREF_1", pref);
+                                }
+                            }
+                        }
+                    } catch (e) {}
+                }, false, true, function () {
+                    resolve();
+                });
+            } catch (e) {
+                resolve();
+            }
+        });
+    }
+
+    /**
+     * Parse raw field into structured citation object.
+     * Safely slices JSON between first '{' and last '}' to handle both ONLYOFFICE and MS Word 'ADDIN ...' field prefixes.
      */
     function parseCitationField(rawField) {
-        var jsonStr = rawField.Value.replace(/^ZOTERO_ITEM\s+CSL_CITATION\s*/, "").trim();
+        if (!rawField || !rawField.Value) return null;
+
+        var val = rawField.Value;
+        var startIdx = val.indexOf("{");
+        var endIdx = val.lastIndexOf("}");
         var data = {};
-        try {
-            data = JSON.parse(jsonStr);
-        } catch (e) {
-            console.warn("Could not parse citation JSON:", jsonStr);
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+            var jsonStr = val.substring(startIdx, endIdx + 1);
+            try {
+                data = JSON.parse(jsonStr);
+            } catch (e) {
+                console.warn("Could not parse citation JSON:", jsonStr, e);
+            }
         }
 
         return {
@@ -185,8 +372,7 @@ var CitationManager = (function () {
 
     /**
      * Build formatted citation text and Word CSL data structure.
-     * In narrative mode, the entire "Author (Year)" string is unified inside the AddinField,
-     * ensuring automatic transformation strictly as regulated by the styles hosted in Zotero.
+     * Preserves CSL-JSON itemData, URIs, locators, prefixes, and suffixes.
      */
     function buildCitation(items, options) {
         options = options || {};
@@ -207,11 +393,23 @@ var CitationManager = (function () {
             var itemPrefix = isPrimary ? prefix : (item.prefix || "");
             var itemSuffix = isPrimary ? suffix : (item.suffix || "");
             var itemSuppress = isPrimary ? isSuppress : (item["suppress-author"] || false);
+            var itemKey = getItemKey(item);
+
+            var itemData = {};
+            if (item.itemData && typeof item.itemData === "object" && Object.keys(item.itemData).length > 0) {
+                itemData = item.itemData;
+            } else if (item.raw && item.raw.data) {
+                itemData = item.raw.data;
+            }
+
+            var uris = (Array.isArray(item.uris) && item.uris.length > 0)
+                ? item.uris
+                : ["http://zotero.org/users/0/items/" + itemKey];
 
             return {
-                id: item.key || item.id,
-                uris: ["http://zotero.org/users/0/items/" + (item.key || item.id)],
-                itemData: item.raw ? (item.raw.data || {}) : {},
+                id: itemKey,
+                uris: uris,
+                itemData: itemData,
                 locator: itemLocator,
                 label: itemLocator ? "page" : undefined,
                 prefix: itemPrefix,
@@ -333,7 +531,7 @@ var CitationManager = (function () {
 
     /**
      * Insert citation into document, strictly setting Times New Roman font,
-     * and awaiting autoUpgradeBibliography
+     * syncing document style, and awaiting autoUpgradeBibliography
      */
     function insertCitation(citationData, isFootnote, activeStyle) {
         var fieldId = "ZOTERO_" + Date.now();
@@ -383,8 +581,9 @@ var CitationManager = (function () {
         }
 
         return doAddField().then(function (result) {
+            setDocumentZoteroStyle(activeStyle);
             var newKeys = (citationData.citationObj.citationItems || []).map(function (it) {
-                return it.id;
+                return getItemKey(it);
             });
             return autoUpgradeBibliography(activeStyle, newKeys).then(function () {
                 return result;
@@ -405,8 +604,9 @@ var CitationManager = (function () {
         return new Promise(function (resolve) {
             window.Asc.plugin.executeMethod("UpdateAddinFields", [[updatedField]], function () {
                 applyFontToField(fieldId).then(function () {
+                    setDocumentZoteroStyle(activeStyle);
                     var extraKeys = (citationData.citationObj.citationItems || []).map(function (it) {
-                        return it.id;
+                        return getItemKey(it);
                     });
                     autoUpgradeBibliography(activeStyle, extraKeys).then(function () {
                         resolve(updatedField);
@@ -473,14 +673,134 @@ var CitationManager = (function () {
     }
 
     /**
+     * Clean and prepare HTML string for insertion via PasteHtml
+     */
+    function prepareBibHtmlForPaste(html) {
+        var div = document.createElement("div");
+        div.innerHTML = html;
+
+        var entries = div.querySelectorAll(".csl-entry");
+        if (entries && entries.length > 0) {
+            var output = "";
+            entries.forEach(function (e) {
+                // Ensure each bibliography entry is wrapped in a paragraph tag for Word formatting
+                output += "<p style='font-family:\"Times New Roman\", serif; margin-left: 36pt; text-indent: -36pt; line-height: 1.15; margin-bottom: 7pt;'>" + e.innerHTML + "</p>";
+            });
+            return output;
+        }
+        return html;
+    }
+
+    /**
+     * Apply hanging indent (720 / -720) and Times New Roman font to selected paragraphs
+     */
+    function applyBibParagraphFormatting() {
+        return new Promise(function (resolve) {
+            window.Asc.plugin.callCommand(function () {
+                var doc = Api.GetDocument();
+                var range = doc.GetRangeBySelect();
+                if (range && range.GetAllParagraphs) {
+                    var paras = range.GetAllParagraphs();
+                    if (paras && paras.length) {
+                        for (var i = 0; i < paras.length; i++) {
+                            var p = paras[i];
+                            p.SetFontFamily("Times New Roman");
+                            p.SetIndLeft(720);        // 0.5" / 1.27 cm Left Indent
+                            p.SetIndFirstLine(-720);  // 悬挂缩进 (Hanging Indent)
+                            p.SetSpacingAfter(140);   // ~7pt space
+                            p.SetSpacingLine(276, "multiple");
+                        }
+                    }
+                }
+            }, false, true, function () {
+                resolve();
+            });
+        });
+    }
+
+    /**
+     * Insert or update bibliography in document with standard Hanging Indent (悬挂缩进)
+     * Supports both MS Word-compatible AddinField (ADDIN ZOTERO_BIBL) and ONLYOFFICE ContentControl.
+     */
+    function updateBibliographyInDoc(htmlBib, entries, bibInfo) {
+        return new Promise(function (resolve, reject) {
+            var formattedHtml = prepareBibHtmlForPaste(htmlBib);
+
+            // Legacy ContentControl update branch
+            if (bibInfo && bibInfo.type === "contentControl") {
+                window.Asc.scope.bibEntries = entries;
+                window.Asc.plugin.callCommand(function () {
+                    var oDocument = Api.GetDocument();
+                    var entries = Asc.scope.bibEntries;
+                    var controls = oDocument.GetContentControlsByTag("ZOTERO_BIBLIOGRAPHY");
+                    if (!controls || controls.length === 0) return;
+                    var oBlockLvlSdt = controls[0];
+                    oBlockLvlSdt.RemoveAllElements();
+                    for (var i = 0; i < entries.length; i++) {
+                        var oParagraph = Api.CreateParagraph();
+                        oParagraph.SetFontFamily("Times New Roman");
+                        oParagraph.SetIndLeft(720);
+                        oParagraph.SetIndFirstLine(-720);
+                        oParagraph.SetSpacingAfter(140);
+                        oParagraph.SetSpacingLine(276, "multiple");
+                        var runs = entries[i];
+                        for (var j = 0; j < runs.length; j++) {
+                            var rData = runs[j];
+                            var oRun = oParagraph.AddText(rData.text);
+                            oRun.SetFontFamily("Times New Roman");
+                            if (rData.italic) oRun.SetItalic(true);
+                            if (rData.bold) oRun.SetBold(true);
+                        }
+                        oBlockLvlSdt.AddElement(oParagraph);
+                    }
+                }, false, true, function () {
+                    resolve(entries.length);
+                });
+                return;
+            }
+
+            // Word-compatible AddinField branch
+            function doInsertAddinBib(targetFieldId) {
+                var bibField = {
+                    FieldId: targetFieldId || ("ZOTERO_BIBL_" + Date.now()),
+                    Value: BIB_PREFIX,
+                    Content: " "
+                };
+
+                window.Asc.plugin.executeMethod("AddAddinField", [bibField], function () {
+                    window.Asc.plugin.callCommand(function () {
+                        var doc = Api.GetDocument();
+                        doc.MoveCursorLeft(1, true);
+                    }, false, true, function () {
+                        window.Asc.plugin.executeMethod("PasteHtml", [formattedHtml], function () {
+                            applyBibParagraphFormatting().then(function () {
+                                resolve(entries ? entries.length : 1);
+                            });
+                        });
+                    });
+                });
+            }
+
+            if (bibInfo && bibInfo.type === "addinField" && bibInfo.field && bibInfo.field.FieldId) {
+                window.Asc.plugin.executeMethod("SelectAddinField", [bibInfo.field.FieldId], function () {
+                    window.Asc.plugin.executeMethod("RemoveSelectedContent", null, function () {
+                        doInsertAddinBib(bibInfo.field.FieldId);
+                    });
+                });
+            } else {
+                doInsertAddinBib("ZOTERO_BIBL_" + Date.now());
+            }
+        });
+    }
+
+    /**
      * Insert bibliography into document with standard Hanging Indent (悬挂缩进)
      * and strictly defaults to Times New Roman.
      */
     function insertBibliography(style) {
-        return hasBibliographyControl().then(function (hasBib) {
-            if (hasBib) {
+        return getBibliographyInfo().then(function (existingInfo) {
+            if (existingInfo) {
                 // Bibliography exists -> Perform full on-demand live refresh across document!
-                // Re-reads all items fresh from Zotero to sync any background edits before submission!
                 return reformatDocumentStyle(style);
             }
 
@@ -492,7 +812,8 @@ var CitationManager = (function () {
                 var keysSet = {};
                 fields.forEach(function (f) {
                     (f.citationItems || []).forEach(function (it) {
-                        if (it.id) keysSet[it.id] = true;
+                        var k = getItemKey(it);
+                        if (k) keysSet[k] = true;
                     });
                 });
                 var keys = Object.keys(keysSet);
@@ -510,43 +831,8 @@ var CitationManager = (function () {
                         throw new Error("No bibliography entries could be parsed.");
                     }
 
-                    return new Promise(function (resolve) {
-                        window.Asc.scope.bibEntries = entries;
-
-                        window.Asc.plugin.callCommand(function () {
-                            var oDocument = Api.GetDocument();
-                            var entries = Asc.scope.bibEntries;
-
-                            var oBlockLvlSdt = Api.CreateBlockLvlSdt();
-                            oBlockLvlSdt.SetTag("ZOTERO_BIBLIOGRAPHY");
-                            oBlockLvlSdt.SetAlias("Zotero Bibliography");
-
-                            for (var i = 0; i < entries.length; i++) {
-                                var oParagraph = Api.CreateParagraph();
-
-                                oParagraph.SetFontFamily("Times New Roman");
-                                oParagraph.SetIndLeft(720);        // 0.5" / 1.27 cm Left Indent
-                                oParagraph.SetIndFirstLine(-720);  // 悬挂缩进 (Hanging Indent)
-                                oParagraph.SetSpacingAfter(140);   // ~7pt space
-                                oParagraph.SetSpacingLine(276, "multiple");
-
-                                var runs = entries[i];
-                                for (var j = 0; j < runs.length; j++) {
-                                    var rData = runs[j];
-                                    var oRun = oParagraph.AddText(rData.text);
-                                    oRun.SetFontFamily("Times New Roman");
-                                    if (rData.italic) oRun.SetItalic(true);
-                                    if (rData.bold) oRun.SetBold(true);
-                                }
-
-                                oBlockLvlSdt.AddElement(oParagraph);
-                            }
-
-                            oDocument.InsertContent([oBlockLvlSdt]);
-                        }, false, true, function () {
-                            resolve(entries.length);
-                        });
-                    });
+                    setDocumentZoteroStyle(style);
+                    return updateBibliographyInDoc(htmlBib, entries, null);
                 });
             });
         });
@@ -556,64 +842,33 @@ var CitationManager = (function () {
      * Automatically upgrade the bibliography list in the document whenever citations change
      */
     function autoUpgradeBibliography(style, extraKeys) {
-        return getAllCitationFields().then(function (fields) {
-            var keysSet = {};
-            fields.forEach(function (f) {
-                (f.citationItems || []).forEach(function (it) {
-                    if (it.id) keysSet[it.id] = true;
-                });
-            });
+        return getBibliographyInfo().then(function (bibInfo) {
+            if (!bibInfo) return; // Only upgrade if a bibliography already exists in the document
 
-            if (Array.isArray(extraKeys)) {
-                extraKeys.forEach(function (k) {
-                    if (k) keysSet[k] = true;
-                });
-            }
-
-            var keys = Object.keys(keysSet);
-            if (!keys.length) return;
-
-            return ZoteroAPI.getBibliography(keys, 0, style).then(function (htmlBib) {
-                if (!htmlBib) return;
-                var entries = parseBibHtml(htmlBib);
-                if (!entries.length) return;
-
-                return new Promise(function (resolve) {
-                    window.Asc.scope.bibEntries = entries;
-
-                    window.Asc.plugin.callCommand(function () {
-                        var oDocument = Api.GetDocument();
-                        var entries = Asc.scope.bibEntries;
-
-                        var controls = oDocument.GetContentControlsByTag("ZOTERO_BIBLIOGRAPHY");
-                        if (!controls || controls.length === 0) {
-                            return;
-                        }
-
-                        var oBlockLvlSdt = controls[0];
-                        oBlockLvlSdt.RemoveAllElements();
-
-                        for (var i = 0; i < entries.length; i++) {
-                            var oParagraph = Api.CreateParagraph();
-                            oParagraph.SetFontFamily("Times New Roman");
-                            oParagraph.SetIndLeft(720);        // 0.5" / 1.27 cm
-                            oParagraph.SetIndFirstLine(-720);  // 悬挂缩进 (Hanging Indent)
-                            oParagraph.SetSpacingAfter(140);   // ~7pt space
-                            oParagraph.SetSpacingLine(276, "multiple");
-
-                            var runs = entries[i];
-                            for (var j = 0; j < runs.length; j++) {
-                                var rData = runs[j];
-                                var oRun = oParagraph.AddText(rData.text);
-                                oRun.SetFontFamily("Times New Roman");
-                                if (rData.italic) oRun.SetItalic(true);
-                                if (rData.bold) oRun.SetBold(true);
-                            }
-                            oBlockLvlSdt.AddElement(oParagraph);
-                        }
-                    }, false, true, function () {
-                        resolve(true);
+            return getAllCitationFields().then(function (fields) {
+                var keysSet = {};
+                fields.forEach(function (f) {
+                    (f.citationItems || []).forEach(function (it) {
+                        var k = getItemKey(it);
+                        if (k) keysSet[k] = true;
                     });
+                });
+
+                if (Array.isArray(extraKeys)) {
+                    extraKeys.forEach(function (k) {
+                        if (k) keysSet[k] = true;
+                    });
+                }
+
+                var keys = Object.keys(keysSet);
+                if (!keys.length) return;
+
+                return ZoteroAPI.getBibliography(keys, 0, style).then(function (htmlBib) {
+                    if (!htmlBib) return;
+                    var entries = parseBibHtml(htmlBib);
+                    if (!entries.length) return;
+
+                    return updateBibliographyInDoc(htmlBib, entries, bibInfo);
                 });
             });
         }).catch(function (err) {
@@ -623,8 +878,7 @@ var CitationManager = (function () {
 
     /**
      * Reformat all citations and bibliography across the entire document to a new CSL style.
-     * Ubiquitously converts Narrative citations between any language/style representations
-     * (e.g. 'Yan et al. (2026)' <-> '严等 (2026)' or 'Wang等 (2026)' or 'Schmidt u. a. (2024)') in place!
+     * Fully compatible with citations from MS Word or ONLYOFFICE.
      */
     function reformatDocumentStyle(newStyle) {
         return getAllCitationFields().then(function (fields) {
@@ -637,7 +891,8 @@ var CitationManager = (function () {
             var allKeysSet = {};
             fields.forEach(function (f) {
                 (f.citationItems || []).forEach(function (it) {
-                    if (it.id) allKeysSet[it.id] = true;
+                    var k = getItemKey(it);
+                    if (k) allKeysSet[k] = true;
                 });
             });
             var allKeys = Object.keys(allKeysSet);
@@ -645,14 +900,25 @@ var CitationManager = (function () {
 
             return ZoteroAPI.getItemsByKeys(allKeys, 0, newStyle).then(function (items) {
                 var itemMap = {};
-                items.forEach(function (it) {
+                (items || []).forEach(function (it) {
                     itemMap[it.key] = it;
+                });
+
+                // Fallback to itemData if any item was not returned by local Zotero
+                fields.forEach(function (f) {
+                    (f.citationItems || []).forEach(function (citItem) {
+                        var k = getItemKey(citItem);
+                        if (k && !itemMap[k]) {
+                            itemMap[k] = createItemFromItemData(citItem, k);
+                        }
+                    });
                 });
 
                 var updatedFields = [];
                 fields.forEach(function (f) {
                     var clusterItems = (f.citationItems || []).map(function (it) {
-                        return itemMap[it.id] || { key: it.id, id: it.id, authors: "Unknown", year: "" };
+                        var k = getItemKey(it);
+                        return itemMap[k] || createItemFromItemData(it, k);
                     });
 
                     var firstCit = (f.citationItems && f.citationItems[0]) || {};
@@ -690,6 +956,7 @@ var CitationManager = (function () {
                                 return applyFontToField(f.FieldId);
                             });
                             Promise.all(promises).then(function () {
+                                setDocumentZoteroStyle(newStyle);
                                 autoUpgradeBibliography(newStyle, allKeys).then(function () {
                                     resolve(updatedFields.length);
                                 });
@@ -713,7 +980,7 @@ var CitationManager = (function () {
                     return;
                 }
                 var zoteroFields = fields.filter(function (f) {
-                    return f.Value && (f.Value.indexOf("ZOTERO_ITEM") !== -1 || f.Value.indexOf("ZOTERO_BIBL") !== -1);
+                    return f.Value && (f.Value.indexOf("ZOTERO_ITEM") !== -1 || f.Value.indexOf("ZOTERO_BIBL") !== -1 || f.Value.indexOf("ZOTERO_BIBLIOGRAPHY") !== -1);
                 });
                 var count = zoteroFields.length;
                 if (!count) {
@@ -732,9 +999,16 @@ var CitationManager = (function () {
     }
 
     return {
+        getItemKey: getItemKey,
+        createItemFromItemData: createItemFromItemData,
+        parseCitationField: parseCitationField,
         getCurrentField: getCurrentField,
         getAllCitationFields: getAllCitationFields,
-        hasBibliographyControl: hasBibliographyControl,
+        getBibliographyInfo: getBibliographyInfo,
+        hasBibliography: hasBibliography,
+        hasBibliographyControl: hasBibliography, // backwards compatibility
+        getDocumentZoteroStyle: getDocumentZoteroStyle,
+        setDocumentZoteroStyle: setDocumentZoteroStyle,
         buildCitation: buildCitation,
         extractNarrativeFromZoteroStyle: extractNarrativeFromZoteroStyle,
         insertCitation: insertCitation,

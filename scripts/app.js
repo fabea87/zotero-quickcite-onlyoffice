@@ -118,6 +118,30 @@
             }
         });
 
+        CitationManager.getDocumentZoteroStyle().then(function (docStyle) {
+            if (docStyle) {
+                var cleanStyle = docStyle.replace(/^http:\/\/www\.zotero\.org\/styles\//, "").trim();
+                if (cleanStyle) {
+                    state.activeStyle = cleanStyle;
+                    var exists = state.retainedStyles.some(function (s) { return s.id === cleanStyle; });
+                    if (!exists) {
+                        var known = ALL_ZOTERO_STYLES.find(function (s) { return s.id === cleanStyle; });
+                        if (known) {
+                            state.retainedStyles.unshift(known);
+                        } else {
+                            state.retainedStyles.unshift({
+                                id: cleanStyle,
+                                title: cleanStyle,
+                                format: "author-date"
+                            });
+                        }
+                        saveRetainedStyles();
+                    }
+                    initStyleDropdown();
+                }
+            }
+        });
+
         CitationManager.getCurrentField().then(function (field) {
             if (field) {
                 setupEditMode(field);
@@ -129,8 +153,8 @@
             setupInsertMode();
         });
 
-        // Detect if bibliography already exists and rename button to "Update Bibliography"
-        CitationManager.hasBibliographyControl().then(function (hasBib) {
+        // Detect if bibliography already exists (in AddinField or ContentControl)
+        CitationManager.hasBibliography().then(function (hasBib) {
             updateBibButtonState(hasBib);
         });
     };
@@ -486,18 +510,45 @@
 
         if (firstItem["suppress-author"]) {
             setFormatMode("suppress");
+        } else if ((field.properties && field.properties.isNarrative) || firstItem.isNarrative) {
+            setFormatMode("narrative");
         } else {
             setFormatMode("parenthetical");
         }
 
         var keys = [];
         (field.citationItems || []).forEach(function (citItem) {
-            if (citItem.id) keys.push(citItem.id);
+            var k = CitationManager.getItemKey(citItem);
+            if (k) keys.push(k);
         });
 
         if (keys.length > 0) {
             ZoteroAPI.getItemsByKeys(keys, 0, state.activeStyle).then(function (items) {
-                state.selectedItems = items;
+                var itemMap = {};
+                (items || []).forEach(function (it) {
+                    itemMap[it.key] = it;
+                });
+
+                state.selectedItems = (field.citationItems || []).map(function (citItem) {
+                    var k = CitationManager.getItemKey(citItem);
+                    if (itemMap[k]) {
+                        var it = itemMap[k];
+                        it.locator = citItem.locator || "";
+                        it.prefix = citItem.prefix || "";
+                        it.suffix = citItem.suffix || "";
+                        it["suppress-author"] = !!citItem["suppress-author"];
+                        return it;
+                    }
+                    return CitationManager.createItemFromItemData(citItem, k);
+                });
+
+                renderChips();
+                updateLivePreview();
+            }).catch(function () {
+                state.selectedItems = (field.citationItems || []).map(function (citItem) {
+                    var k = CitationManager.getItemKey(citItem);
+                    return CitationManager.createItemFromItemData(citItem, k);
+                });
                 renderChips();
                 updateLivePreview();
             });

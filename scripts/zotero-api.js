@@ -252,7 +252,7 @@ var ZoteroAPI = (function () {
         var lib = (libraryId && libraryId !== "0" && libraryId !== 0) ? ("groups/" + libraryId) : "users/0";
         var cslStyle = style || "apa";
 
-        var url = BASE_URL + "/api/" + lib + "/items?itemKey=" + encodeURIComponent(keys.join(",")) + "&include=citation,data&style=" + encodeURIComponent(cslStyle);
+        var url = BASE_URL + "/api/" + lib + "/items?itemKey=" + encodeURIComponent(keys.join(",")) + "&itemType=-attachment&include=citation,data&style=" + encodeURIComponent(cslStyle);
 
         return sendGet(url, 8000).then(function (rawText) {
             var data = [];
@@ -261,7 +261,11 @@ var ZoteroAPI = (function () {
             } catch (e) {
                 console.warn("Failed to parse items JSON:", e);
             }
-            return (data || []).map(normalizeItem);
+            return (data || [])
+                .filter(function (it) {
+                    return it && (!it.data || it.data.itemType !== "attachment");
+                })
+                .map(normalizeItem);
         });
     }
 
@@ -273,7 +277,7 @@ var ZoteroAPI = (function () {
         var lib = (libraryId && libraryId !== "0" && libraryId !== 0) ? ("groups/" + libraryId) : "users/0";
         var cslStyle = style || "apa";
 
-        var url = BASE_URL + "/api/" + lib + "/items?itemKey=" + encodeURIComponent(keys.join(",")) + "&format=bib&style=" + encodeURIComponent(cslStyle);
+        var url = BASE_URL + "/api/" + lib + "/items?itemKey=" + encodeURIComponent(keys.join(",")) + "&itemType=-attachment&format=bib&style=" + encodeURIComponent(cslStyle);
 
         return sendGet(url, 12000);
     }
