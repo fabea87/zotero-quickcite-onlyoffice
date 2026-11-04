@@ -1,8 +1,8 @@
 /**
  * Zotero QuickCite - Citation & Document Manager
  * Manages Word-compatible AddinFields, CSL formatting, hanging indents (悬挂缩进),
- * narrative citations, automatic bibliography upgrades, and document-wide style changes.
- * Defaults strictly to Times New Roman and uses Zotero Desktop's exact CSL output 100%.
+ * ubiquitous narrative citations (with multi-language author switching like 'Yan et al. (2026)' <-> '严等 (2026)'),
+ * automatic bibliography upgrades, and document-wide style changes in Times New Roman.
  */
 var CitationManager = (function () {
     "use strict";
@@ -28,6 +28,21 @@ var CitationManager = (function () {
             .replace(/[\u2066-\u206f\u200b-\u200f]/g, "")
             .replace(/\s+/g, " ")
             .trim();
+    }
+
+    /**
+     * Format locator according to academic CSL rules:
+     * - Single page: "p. 42"
+     * - Page range (contains -, –, ,, or 'to'): "pp. 42-44"
+     * - If already prefixed with p., pp., chap., sec., etc., leave intact
+     */
+    function formatLocator(rawLoc) {
+        if (!rawLoc) return "";
+        var loc = rawLoc.trim();
+        if (!loc) return "";
+        if (/^(p\.|pp\.|chap\.|sec\.|para\.)/i.test(loc)) return loc;
+        if (/[\-\u2013,]|(\bto\b)/i.test(loc)) return "pp. " + loc;
+        return "p. " + loc;
     }
 
     /**
@@ -121,10 +136,9 @@ var CitationManager = (function () {
     }
 
     /**
-     * Compute clean prose author name for narrative citation (e.g. "Zhang and Liu" or "Panadero et al.")
-     * Free from Unicode isolates and strictly using standard ASCII spaces.
+     * Fallback prose author calculation if Zotero API citation is missing
      */
-    function computeNarrativeAuthor(item) {
+    function computeNarrativeAuthor(item, isChineseStyle) {
         if (!item) return "";
         var rawData = item.raw ? (item.raw.data || {}) : {};
         var creators = rawData.creators || [];
@@ -138,34 +152,79 @@ var CitationManager = (function () {
             } else if (creators.length === 2) {
                 var second = creators[1];
                 var secondLast = cleanText(second.lastName || second.name || "");
-                return firstLast + " and " + secondLast; // APA 7th §8.11 running text uses 'and'
+                return isChineseStyle ? (firstLast + "和" + secondLast) : (firstLast + " and " + secondLast);
             } else {
-                return firstLast + " et al.";
+                return isChineseStyle ? (firstLast + "等") : (firstLast + " et al.");
             }
         }
 
         var authors = cleanText(item.authors || "Author");
-        return authors.replace(/\s*&\s*/g, " and ").replace(/\s+/g, " ");
+        return isChineseStyle ? authors.replace(/\s*&\s*/g, "和").replace(/et al\./g, "等") : authors.replace(/\s*&\s*/g, " and ").replace(/\s+/g, " ");
     }
 
     /**
-     * Format locator according to APA/CSL rules:
-     * - Single page: "p. 42"
-     * - Page range (contains -, –, ,, or 'to'): "pp. 42-44"
-     * - If already prefixed with p., pp., chap., sec., etc., leave intact
+     * Ubiquitously extract narrative author and year dynamically from Zotero's CSL output.
+     * Works across ALL styles and ALL languages (English, Chinese, German, French, etc.):
+     * - English: "(Wang et al., 2026)" -> "Wang et al. (2026)"
+     * - Chinese: "(Wang等, 2026)" -> "Wang等 (2026)" or "(严等, 2026)" -> "严等 (2026)"
+     * - German: "(Schmidt u. a., 2024)" -> "Schmidt u. a. (2024)"
+     * - French: "(Dupont et coll., 2023)" -> "Dupont et coll. (2023)"
+     * - 2 authors: "(Teng & Zhang, 2016)" -> "Teng and Zhang (2016)"
      */
-    function formatLocator(rawLoc) {
-        if (!rawLoc) return "";
-        var loc = rawLoc.trim();
-        if (!loc) return "";
-        if (/^(p\.|pp\.|chap\.|sec\.|para\.)/i.test(loc)) return loc;
-        if (/[\-\u2013,]|(\bto\b)/i.test(loc)) return "pp. " + loc;
-        return "p. " + loc;
+    function universalExtractNarrative(zoteroCit, year, locator, prefix, suffix, fallbackItem) {
+        var raw = cleanText(zoteroCit || "");
+        var inner = raw;
+        if ((inner.startsWith("(") && inner.endsWith(")")) || (inner.startsWith("[") && inner.endsWith("]"))) {
+            inner = inner.slice(1, -1).trim();
+        }
+
+        var authorPart = "";
+        var yearPart = year || "";
+
+        // Match "<AuthorPart>, <YearPart>" or "<AuthorPart> <YearPart>" or "<AuthorPart>: <YearPart>"
+        var m = inner.match(/^(.*?)(?:,\s*|\s+|:\s*)(\d{4}[a-z]?)$/);
+        if (m) {
+            authorPart = m[1].trim();
+            yearPart = m[2];
+        } else if (fallbackItem) {
+            authorPart = computeNarrativeAuthor(fallbackItem, /[\u4e00-\u9fa5]/.test(raw));
+        } else {
+            authorPart = inner;
+        }
+
+        // In narrative prose, if author string has '&', replace with language conjunction
+        if (authorPart.indexOf("&") !== -1) {
+            if (/[\u4e00-\u9fa5]/.test(authorPart)) {
+                authorPart = authorPart.replace(/\s*&\s*/g, "和");
+            } else {
+                authorPart = authorPart.replace(/\s*&\s*/g, " and ");
+            }
+        }
+
+        var inParen = yearPart;
+        if (locator) {
+            inParen += (inParen ? ", " : "") + formatLocator(locator);
+        }
+        if (suffix) {
+            inParen += (suffix.startsWith(",") ? "" : " ") + suffix.trim();
+        }
+
+        var full = authorPart + (inParen ? (" (" + inParen + ")") : "");
+        if (prefix) {
+            full = prefix.trim() + " " + full;
+        }
+
+        return {
+            author: authorPart,
+            year: yearPart,
+            fullText: full
+        };
     }
 
     /**
      * Build formatted citation text and Word CSL data structure.
-     * Uses Zotero Desktop's exact CSL output for parenthetical citations.
+     * In narrative mode, the entire "Author (Year)" string is unified inside the AddinField,
+     * ensuring automatic bilingual transformation (e.g. 'Yan et al. (2026)' <-> '严等 (2026)') when style changes!
      */
     function buildCitation(items, options) {
         options = options || {};
@@ -175,12 +234,10 @@ var CitationManager = (function () {
         var formatMode = options.formatMode || "parenthetical";
 
         var isNarrative = (formatMode === "narrative");
-        var isSuppress = (formatMode === "suppress" || isNarrative);
+        var isSuppress = (formatMode === "suppress");
 
         var narrativeAuthor = "";
-        if (isNarrative && items.length > 0) {
-            narrativeAuthor = computeNarrativeAuthor(items[0]);
-        }
+        var formattedText = "";
 
         var citationItems = items.map(function (item, idx) {
             var isPrimary = (idx === 0);
@@ -197,14 +254,26 @@ var CitationManager = (function () {
                 label: itemLocator ? "page" : undefined,
                 prefix: itemPrefix,
                 suffix: itemSuffix,
-                "suppress-author": itemSuppress
+                "suppress-author": itemSuppress,
+                isNarrative: isNarrative
             };
         });
 
-        var formattedText = "";
-
-        if (formatMode === "suppress" || isNarrative) {
-            // Narrative / Suppress mode: in-text field is (Year) or (Year, pp. 42-44)
+        if (isNarrative && items.length > 0) {
+            // NARRATIVE CITATION: e.g. "Yan et al. (2026)" or "Yan等 (2026)"
+            var primaryItem = items[0];
+            var narrative = universalExtractNarrative(
+                primaryItem.citation,
+                primaryItem.year,
+                locator,
+                prefix,
+                suffix,
+                primaryItem
+            );
+            formattedText = narrative.fullText;
+            narrativeAuthor = narrative.author;
+        } else if (isSuppress) {
+            // YEAR ONLY: (2026) or (2026, pp. 42-44)
             var yearParts = items.map(function (item, idx) {
                 var citItem = citationItems[idx];
                 var y = item.year || "";
@@ -221,7 +290,7 @@ var CitationManager = (function () {
             });
             formattedText = "(" + yearParts.join("; ") + ")";
         } else {
-            // Parenthetical mode: DIRECTLY USE ZOTERO DESKTOP'S EXACT CSL OUTPUT
+            // PARENTHETICAL: DIRECTLY USE ZOTERO DESKTOP'S EXACT CSL OUTPUT
             var isNumeric = false;
             var parts = items.map(function (item, idx) {
                 var citItem = citationItems[idx];
@@ -266,6 +335,7 @@ var CitationManager = (function () {
             properties: {
                 formattedCitation: formattedText,
                 plainCitation: formattedText,
+                isNarrative: isNarrative,
                 noteIndex: options.isFootnote ? 1 : 0
             },
             citationItems: citationItems,
@@ -352,27 +422,7 @@ var CitationManager = (function () {
             }
         }
 
-        var addPromise;
-        if (citationData.isNarrative && citationData.narrativeAuthor) {
-            addPromise = new Promise(function (resolve, reject) {
-                var authorText = citationData.narrativeAuthor + " ";
-                window.Asc.plugin.executeMethod("InputText", [authorText], function () {
-                    window.Asc.plugin.callCommand(function () {
-                        var oDocument = Api.GetDocument();
-                        var oRange = oDocument.GetRangeBySelect();
-                        if (oRange && oRange.SetFontFamily) {
-                            oRange.SetFontFamily("Times New Roman");
-                        }
-                    }, false, true, function () {
-                        doAddField().then(resolve).catch(reject);
-                    });
-                });
-            });
-        } else {
-            addPromise = doAddField();
-        }
-
-        return addPromise.then(function (result) {
+        return doAddField().then(function (result) {
             var newKeys = (citationData.citationObj.citationItems || []).map(function (it) {
                 return it.id;
             });
@@ -516,17 +566,10 @@ var CitationManager = (function () {
                     for (var i = 0; i < entries.length; i++) {
                         var oParagraph = Api.CreateParagraph();
 
-                        // Font Family: Strictly Times New Roman
                         oParagraph.SetFontFamily("Times New Roman");
-
-                        // 悬挂缩进 (Hanging Indent) per OOXML standard:
-                        // SetIndLeft(720) = 0.5 inch / 1.27 cm Left Indent
-                        // SetIndFirstLine(-720) = -0.5 inch First Line Indent (Hanging)
-                        oParagraph.SetIndLeft(720);
-                        oParagraph.SetIndFirstLine(-720);
-
-                        // Spacing between entries: 140 dxa (~7pt), 1.15 line spacing
-                        oParagraph.SetSpacingAfter(140);
+                        oParagraph.SetIndLeft(720);        // 0.5" / 1.27 cm Left Indent
+                        oParagraph.SetIndFirstLine(-720);  // 悬挂缩进 (Hanging Indent)
+                        oParagraph.SetSpacingAfter(140);   // ~7pt space
                         oParagraph.SetSpacingLine(276, "multiple");
 
                         var runs = entries[i];
@@ -621,8 +664,9 @@ var CitationManager = (function () {
     }
 
     /**
-     * Reformat all citations and bibliography across the entire document to a new CSL style,
-     * strictly maintaining Zotero's exact output and Times New Roman font.
+     * Reformat all citations and bibliography across the entire document to a new CSL style.
+     * Ubiquitously converts Narrative citations between any language/style representations
+     * (e.g. 'Yan et al. (2026)' <-> '严等 (2026)' or 'Wang等 (2026)' or 'Schmidt u. a. (2024)') in place!
      */
     function reformatDocumentStyle(newStyle) {
         return getAllCitationFields().then(function (fields) {
@@ -654,7 +698,15 @@ var CitationManager = (function () {
                     });
 
                     var firstCit = (f.citationItems && f.citationItems[0]) || {};
-                    var formatMode = firstCit["suppress-author"] ? "suppress" : "parenthetical";
+                    var isNarrative = !!(f.properties && f.properties.isNarrative) || !!firstCit.isNarrative;
+                    var isSuppress = !!firstCit["suppress-author"] && !isNarrative;
+
+                    var formatMode = "parenthetical";
+                    if (isNarrative) {
+                        formatMode = "narrative";
+                    } else if (isSuppress) {
+                        formatMode = "suppress";
+                    }
 
                     var built = buildCitation(clusterItems, {
                         locator: firstCit.locator || "",
@@ -726,6 +778,7 @@ var CitationManager = (function () {
         getAllCitationFields: getAllCitationFields,
         hasBibliographyControl: hasBibliographyControl,
         buildCitation: buildCitation,
+        universalExtractNarrative: universalExtractNarrative,
         computeNarrativeAuthor: computeNarrativeAuthor,
         insertCitation: insertCitation,
         updateCitation: updateCitation,
