@@ -136,42 +136,11 @@ var CitationManager = (function () {
     }
 
     /**
-     * Fallback prose author calculation if Zotero API citation is missing
+     * Pure style-based narrative citation generator:
+     * Derives author and year representations directly and exclusively from Zotero's CSL output.
+     * Zero hardcoded language heuristics; 100% regulated by the style hosted in Zotero.
      */
-    function computeNarrativeAuthor(item, isChineseStyle) {
-        if (!item) return "";
-        var rawData = item.raw ? (item.raw.data || {}) : {};
-        var creators = rawData.creators || [];
-
-        if (Array.isArray(creators) && creators.length > 0) {
-            var first = creators[0];
-            var firstLast = cleanText(first.lastName || first.name || "");
-
-            if (creators.length === 1) {
-                return firstLast;
-            } else if (creators.length === 2) {
-                var second = creators[1];
-                var secondLast = cleanText(second.lastName || second.name || "");
-                return isChineseStyle ? (firstLast + "和" + secondLast) : (firstLast + " and " + secondLast);
-            } else {
-                return isChineseStyle ? (firstLast + "等") : (firstLast + " et al.");
-            }
-        }
-
-        var authors = cleanText(item.authors || "Author");
-        return isChineseStyle ? authors.replace(/\s*&\s*/g, "和").replace(/et al\./g, "等") : authors.replace(/\s*&\s*/g, " and ").replace(/\s+/g, " ");
-    }
-
-    /**
-     * Ubiquitously extract narrative author and year dynamically from Zotero's CSL output.
-     * Works across ALL styles and ALL languages (English, Chinese, German, French, etc.):
-     * - English: "(Wang et al., 2026)" -> "Wang et al. (2026)"
-     * - Chinese: "(Wang等, 2026)" -> "Wang等 (2026)" or "(严等, 2026)" -> "严等 (2026)"
-     * - German: "(Schmidt u. a., 2024)" -> "Schmidt u. a. (2024)"
-     * - French: "(Dupont et coll., 2023)" -> "Dupont et coll. (2023)"
-     * - 2 authors: "(Teng & Zhang, 2016)" -> "Teng and Zhang (2016)"
-     */
-    function universalExtractNarrative(zoteroCit, year, locator, prefix, suffix, fallbackItem) {
+    function extractNarrativeFromZoteroStyle(zoteroCit, year, locator, prefix, suffix) {
         var raw = cleanText(zoteroCit || "");
         var inner = raw;
         if ((inner.startsWith("(") && inner.endsWith(")")) || (inner.startsWith("[") && inner.endsWith("]"))) {
@@ -186,19 +155,8 @@ var CitationManager = (function () {
         if (m) {
             authorPart = m[1].trim();
             yearPart = m[2];
-        } else if (fallbackItem) {
-            authorPart = computeNarrativeAuthor(fallbackItem, /[\u4e00-\u9fa5]/.test(raw));
         } else {
             authorPart = inner;
-        }
-
-        // In narrative prose, if author string has '&', replace with language conjunction
-        if (authorPart.indexOf("&") !== -1) {
-            if (/[\u4e00-\u9fa5]/.test(authorPart)) {
-                authorPart = authorPart.replace(/\s*&\s*/g, "和");
-            } else {
-                authorPart = authorPart.replace(/\s*&\s*/g, " and ");
-            }
         }
 
         var inParen = yearPart;
@@ -224,7 +182,7 @@ var CitationManager = (function () {
     /**
      * Build formatted citation text and Word CSL data structure.
      * In narrative mode, the entire "Author (Year)" string is unified inside the AddinField,
-     * ensuring automatic bilingual transformation (e.g. 'Yan et al. (2026)' <-> '严等 (2026)') when style changes!
+     * ensuring automatic transformation strictly as regulated by the styles hosted in Zotero.
      */
     function buildCitation(items, options) {
         options = options || {};
@@ -260,15 +218,13 @@ var CitationManager = (function () {
         });
 
         if (isNarrative && items.length > 0) {
-            // NARRATIVE CITATION: e.g. "Yan et al. (2026)" or "Yan等 (2026)"
             var primaryItem = items[0];
-            var narrative = universalExtractNarrative(
+            var narrative = extractNarrativeFromZoteroStyle(
                 primaryItem.citation,
                 primaryItem.year,
                 locator,
                 prefix,
-                suffix,
-                primaryItem
+                suffix
             );
             formattedText = narrative.fullText;
             narrativeAuthor = narrative.author;
@@ -778,8 +734,7 @@ var CitationManager = (function () {
         getAllCitationFields: getAllCitationFields,
         hasBibliographyControl: hasBibliographyControl,
         buildCitation: buildCitation,
-        universalExtractNarrative: universalExtractNarrative,
-        computeNarrativeAuthor: computeNarrativeAuthor,
+        extractNarrativeFromZoteroStyle: extractNarrativeFromZoteroStyle,
         insertCitation: insertCitation,
         updateCitation: updateCitation,
         removeCitation: removeCitation,
