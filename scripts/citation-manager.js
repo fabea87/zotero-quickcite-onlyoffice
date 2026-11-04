@@ -779,6 +779,15 @@ var CitationManager = (function () {
      */
     function updateBibliographyInDoc(htmlBib, entries) {
         return new Promise(function (resolve, reject) {
+            // Sort entries alphabetically (A -> Z)
+            if (Array.isArray(entries)) {
+                entries.sort(function (a, b) {
+                    var textA = a.map(function (r) { return r.text; }).join("").trim().toLowerCase();
+                    var textB = b.map(function (r) { return r.text; }).join("").trim().toLowerCase();
+                    return textA.localeCompare(textB);
+                });
+            }
+
             window.Asc.scope.bibEntries = entries;
 
             // Remove any legacy Word AddinField for the bibliography
@@ -817,7 +826,11 @@ var CitationManager = (function () {
                                     if (rData.italic) oRun.SetItalic(true);
                                     if (rData.bold) oRun.SetBold(true);
                                 }
-                                oBlockLvlSdt.AddElement(oParagraph);
+                                if (oBlockLvlSdt.Push) {
+                                    oBlockLvlSdt.Push(oParagraph);
+                                } else {
+                                    oBlockLvlSdt.AddElement(oParagraph, i);
+                                }
                             }
                             return true;
                         }
@@ -858,7 +871,11 @@ var CitationManager = (function () {
                                 if (runData.italic) rObj.SetItalic(true);
                                 if (runData.bold) rObj.SetBold(true);
                             }
-                            oNewBlockLvlSdt.AddElement(oPara);
+                            if (oNewBlockLvlSdt.Push) {
+                                oNewBlockLvlSdt.Push(oPara);
+                            } else {
+                                oNewBlockLvlSdt.AddElement(oPara, e);
+                            }
                         }
 
                         if (refPara && refIdx !== -1) {
