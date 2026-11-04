@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zotero QuickCite</title>
+    <!-- ONLYOFFICE Plugin Base -->
+    <link rel="stylesheet" href="styles/plugins.css">
+    <link rel="stylesheet" href="styles/main.css">
+    <script type="text/javascript" src="scripts/vendor/plugins.js"></script>
+    <script type="text/javascript" src="scripts/vendor/plugins-ui.js"></script>
+</head>
+<body>
+    <!-- Top Bar -->
+    <header class="header-bar">
+        <div class="brand">
+            <div class="brand-icon">Z</div>
+            <span>Zotero QuickCite</span>
+        </div>
+        <div class="status-indicator">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Checking Zotero...</span>
+        </div>
+        <div class="header-controls">
+            <select id="librarySelect" class="select-dropdown" style="display:none;" title="Target Library">
+                <option value="0">My Library</option>
+            </select>
+            <select id="styleSelect" class="select-dropdown" title="Document Citation Style (Author-Date)">
+                <!-- Dynamically populated with user's retained styles -->
+            </select>
+        </div>
+    </header>
+
+    <!-- Edit Mode Banner (shows when cursor is inside existing citation) -->
+    <div id="modeBanner" class="mode-banner">
+        <span id="modeTitle">Editing Citation in Document</span>
+        <button id="btnDeleteCitation" class="btn-delete-small" title="Delete this citation (Cmd+Backspace)">Delete Citation</button>
+    </div>
+
+    <!-- Cluster Chips (selected references) -->
+    <div id="selectedChips" class="chips-container"></div>
+
+    <!-- Main Search Omnibar -->
+    <div class="search-container">
+        <div class="search-wrapper">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="searchInput" class="search-input" placeholder="Type author, title, or 'author:page' (e.g. 'smith:42' or 'panadero')..." autofocus autocomplete="off">
+            <button id="searchClear" class="search-clear">✕</button>
+        </div>
+    </div>
+
+    <!-- Quick Inline Controls Row -->
+    <div class="controls-row">
+        <div class="control-group">
+            <label for="inputLocator" title="Jump here with Alt+L or Tab">Page:</label>
+            <input type="text" id="inputLocator" class="control-input" placeholder="e.g. 42-45" title="Page / locator (Alt+L)">
+        </div>
+        <div class="control-group">
+            <label for="inputPrefix">Prefix:</label>
+            <input type="text" id="inputPrefix" class="control-input" placeholder="e.g. see ">
+        </div>
+        <div class="control-group">
+            <label for="inputSuffix">Suffix:</label>
+            <input type="text" id="inputSuffix" class="control-input" placeholder="e.g. , for review">
+        </div>
+        <div class="citation-type-group">
+            <button type="button" class="segment-btn active" data-mode="parenthetical" title="Parenthetical citation (Alt+P): (Author, Year)">(Author, Year)</button>
+            <button type="button" class="segment-btn" data-mode="narrative" title="Narrative citation (Alt+N): Author (Year) — auto-types author into running text!">Author (Year)</button>
+            <button type="button" class="segment-btn" data-mode="suppress" title="Suppress author (Alt+Y): (Year only)">(Year only)</button>
+        </div>
+    </div>
+
+    <!-- Live Preview Bar -->
+    <div id="livePreview" class="live-preview-bar">
+        <span class="preview-hint">Live preview will appear when an item is selected</span>
+    </div>
+
+    <!-- Results List Deck -->
+    <main class="results-deck" id="resultsList">
+        <div class="loading-spinner">Connecting to Zotero Desktop...</div>
+    </main>
+
+    <!-- Footer Action Bar -->
+    <footer class="footer-bar">
+        <div class="footer-left">
+            <button id="btnBibliography" class="btn btn-default" title="Insert or update bibliography in Times New Roman with hanging indents (Alt+B)">Insert Bibliography</button>
+            <button id="btnUnlink" class="btn btn-link" title="Convert all citation fields in document to plain text">Unlink</button>
+            <span class="keyboard-hints">↵ Insert • ⇧↵ Footnote • ⇥ Tab to Page • Type 'author:42' • Alt+N Narrative • Esc Cancel</span>
+        </div>
+        <div class="footer-right">
+            <button id="btnClose" class="btn btn-default">Cancel</button>
+            <button id="btnFootnote" class="btn btn-default" title="Insert citation as Footnote (Shift+Enter)">Footnote (⇧↵)</button>
+            <button id="btnPrimary" class="btn btn-primary">Insert Citation (↵)</button>
+        </div>
+    </footer>
+
+    <!-- Style Management Modal (Retain, Reorder & Search Styles) -->
+    <div id="styleModal" class="modal-overlay" style="display:none;">
+        <div class="style-modal-content">
+            <div class="style-modal-header">
+                <h3>Style Manager (Retain &amp; Reorder)</h3>
+                <button id="btnCloseStyleModal" class="btn-close-modal">✕</button>
+            </div>
+            
+            <!-- Section 1: Retained Styles in Quick Dropdown -->
+            <div class="style-manager-section">
+                <div class="section-heading">Styles in Quick Dropdown (use &uarr;&darr; to reorder):</div>
+                <div id="retainedStylesList" class="retained-styles-deck">
+                    <!-- Populated dynamically: [↑] [↓] Title (ID) [Use] [✕] -->
+                </div>
+            </div>
+
+            <!-- Section 2: Search and Add other Zotero Styles -->
+            <div class="style-manager-section" style="border-top: 1px solid var(--border-color);">
+                <div class="section-heading">Search &amp; Add More Styles from Zotero:</div>
+                <div style="padding: 0 16px 8px;">
+                    <input type="text" id="styleSearchInput" class="search-input" placeholder="Type to search Zotero styles (e.g. 'System', 'Harvard', 'Elsevier', 'IEEE')..." autocomplete="off">
+                </div>
+                <div class="style-results-deck" id="styleResultsList">
+                    <!-- Matching search results with [+ Add to List] button -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast"></div>
+
+    <!-- Application Scripts -->
+    <script type="text/javascript" src="scripts/zotero-api.js"></script>
+    <script type="text/javascript" src="scripts/citation-manager.js"></script>
+    <script type="text/javascript" src="scripts/app.js"></script>
+</body>
+</html>
