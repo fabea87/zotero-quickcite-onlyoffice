@@ -70,7 +70,6 @@
         els.livePreview = document.getElementById("livePreview");
         els.btnPrimary = document.getElementById("btnPrimary");
         els.btnFootnote = document.getElementById("btnFootnote");
-        els.btnRefresh = document.getElementById("btnRefresh");
         els.btnBibliography = document.getElementById("btnBibliography");
         els.btnUnlink = document.getElementById("btnUnlink");
         els.btnDeleteCitation = document.getElementById("btnDeleteCitation");
@@ -104,47 +103,13 @@
 
     // ========== Initialization ==========
 
-    window.Asc.plugin.init = function (initData) {
-        var action = (typeof initData === "string" ? initData.trim() : "") || (window.Asc.plugin.initData || "citation");
-
-        // Non-visual background ribbon variations
-        if (action === "refresh") {
-            CitationManager.reformatDocumentStyle(state.activeStyle).then(function () {
-                closeModal();
-            }).catch(function () {
-                closeModal();
-            });
-            return;
-        }
-
-        if (action === "bibliography") {
-            CitationManager.insertBibliography(state.activeStyle).then(function () {
-                closeModal();
-            }).catch(function () {
-                closeModal();
-            });
-            return;
-        }
-
-        if (action === "unlink") {
-            CitationManager.unlinkAll().then(function () {
-                closeModal();
-            }).catch(function () {
-                closeModal();
-            });
-            return;
-        }
-
+    window.Asc.plugin.init = function () {
         getElements();
         loadRetainedStyles();
         setupEvents();
         setupContextMenu();
 
         initStyleDropdown();
-
-        if (action === "preferences") {
-            openStyleModal();
-        }
 
         ZoteroAPI.ping().then(function (connected) {
             updateConnectionStatus(connected);
@@ -211,18 +176,11 @@
                     });
                 });
 
-                var refreshBtn = new window.Asc.ButtonContextMenu();
-                refreshBtn.text = "🔄 Refresh Zotero Document";
-                refreshBtn.addCheckers("Target", "Selection");
-                refreshBtn.attachOnClick(function () {
-                    handleRefreshDocument();
-                });
-
-                var bibBtn = new window.Asc.ButtonContextMenu();
-                bibBtn.text = "📚 Insert / Update Bibliography";
-                bibBtn.addCheckers("Target", "Selection");
-                bibBtn.attachOnClick(function () {
-                    handleInsertBibliography();
+                var syncBtn = new window.Asc.ButtonContextMenu();
+                syncBtn.text = "🔄 Refresh & Sync Bibliography";
+                syncBtn.addCheckers("Target", "Selection");
+                syncBtn.attachOnClick(function () {
+                    handleSyncBibliography();
                 });
 
                 window.Asc.Buttons.registerContextMenu();
@@ -953,52 +911,41 @@
     function updateBibButtonState(hasBib) {
         if (!els.btnBibliography) return;
         if (hasBib) {
-            els.btnBibliography.textContent = "Update Bibliography";
-            els.btnBibliography.title = "Update existing reference list in document (Alt+B)";
+            els.btnBibliography.textContent = "🔄 Refresh & Sync (Alt+B)";
+            els.btnBibliography.title = "Synchronize citations & refresh bibliography from Zotero (Alt+B / Alt+R)";
         } else {
-            els.btnBibliography.textContent = "Insert Bibliography";
+            els.btnBibliography.textContent = "Insert Bibliography (Alt+B)";
             els.btnBibliography.title = "Insert reference list in Times New Roman with hanging indents (Alt+B)";
         }
     }
 
-    function handleRefreshDocument() {
-        if (els.btnRefresh) {
-            els.btnRefresh.disabled = true;
-            els.btnRefresh.textContent = "Syncing...";
-        }
-        showToast("Refreshing all citations & bibliography from Zotero Desktop...");
-
-        CitationManager.reformatDocumentStyle(state.activeStyle).then(function (count) {
-            if (els.btnRefresh) {
-                els.btnRefresh.disabled = false;
-                els.btnRefresh.textContent = "🔄 Refresh (Alt+R)";
-            }
-            showToast("✓ Synchronized " + count + " citation(s) and reference list from Zotero!");
-            updateBibButtonState(true);
-            setTimeout(closeModal, 800);
-        }).catch(function (err) {
-            if (els.btnRefresh) {
-                els.btnRefresh.disabled = false;
-                els.btnRefresh.textContent = "🔄 Refresh (Alt+R)";
-            }
-            showToast("Refresh error: " + err.message, true);
-        });
-    }
-
-    function handleInsertBibliography() {
-        var isUpdate = (els.btnBibliography.textContent.indexOf("Update") !== -1);
+    function handleSyncBibliography() {
+        var isRefresh = (els.btnBibliography.textContent.indexOf("Refresh") !== -1 || els.btnBibliography.textContent.indexOf("🔄") !== -1);
         els.btnBibliography.disabled = true;
-        els.btnBibliography.textContent = isUpdate ? "Syncing from Zotero..." : "Formatting...";
+        els.btnBibliography.textContent = "Syncing from Zotero...";
 
-        CitationManager.insertBibliography(state.activeStyle).then(function (count) {
-            updateBibButtonState(true);
-            showToast(isUpdate ? "Synchronized citations & updated bibliography from Zotero!" : "Bibliography inserted in Times New Roman with hanging indents (" + count + " entries)!");
-            setTimeout(closeModal, 600);
-        }).catch(function (err) {
-            els.btnBibliography.disabled = false;
-            updateBibButtonState(isUpdate);
-            showToast("Bibliography error: " + err.message, true);
-        });
+        if (isRefresh) {
+            showToast("Refreshing citations & bibliography from Zotero...");
+            CitationManager.reformatDocumentStyle(state.activeStyle).then(function (count) {
+                updateBibButtonState(true);
+                showToast("✓ Synchronized " + count + " citation(s) and reference list from Zotero!");
+                setTimeout(closeModal, 600);
+            }).catch(function (err) {
+                els.btnBibliography.disabled = false;
+                updateBibButtonState(true);
+                showToast("Sync error: " + err.message, true);
+            });
+        } else {
+            CitationManager.insertBibliography(state.activeStyle).then(function (count) {
+                updateBibButtonState(true);
+                showToast("✓ Bibliography inserted in Times New Roman with hanging indents (" + count + " entries)!");
+                setTimeout(closeModal, 600);
+            }).catch(function (err) {
+                els.btnBibliography.disabled = false;
+                updateBibButtonState(false);
+                showToast("Bibliography error: " + err.message, true);
+            });
+        }
     }
 
     function handleUnlink() {
@@ -1076,13 +1023,9 @@
                     els.searchInput.focus();
                     els.searchInput.select();
                     return;
-                } else if (lowerKey === "r") {
+                } else if (lowerKey === "b" || lowerKey === "r") {
                     e.preventDefault();
-                    handleRefreshDocument();
-                    return;
-                } else if (lowerKey === "b") {
-                    e.preventDefault();
-                    handleInsertBibliography();
+                    handleSyncBibliography();
                     return;
                 }
             }
@@ -1151,11 +1094,8 @@
 
         els.btnPrimary.onclick = function () { submitCitation(false); };
         els.btnFootnote.onclick = function () { submitCitation(true); };
-        if (els.btnRefresh) {
-            els.btnRefresh.onclick = handleRefreshDocument;
-        }
         els.btnDeleteCitation.onclick = deleteCurrentCitation;
-        els.btnBibliography.onclick = handleInsertBibliography;
+        els.btnBibliography.onclick = handleSyncBibliography;
         els.btnUnlink.onclick = handleUnlink;
         els.btnClose.onclick = closeModal;
 
