@@ -149,6 +149,21 @@ var CitationManager = (function () {
     }
 
     /**
+     * Format locator according to APA/CSL rules:
+     * - Single page: "p. 42"
+     * - Page range (contains -, –, ,, or 'to'): "pp. 42-44"
+     * - If already prefixed with p., pp., chap., sec., etc., leave intact
+     */
+    function formatLocator(rawLoc) {
+        if (!rawLoc) return "";
+        var loc = rawLoc.trim();
+        if (!loc) return "";
+        if (/^(p\.|pp\.|chap\.|sec\.|para\.)/i.test(loc)) return loc;
+        if (/[\-\u2013,]|(\bto\b)/i.test(loc)) return "pp. " + loc;
+        return "p. " + loc;
+    }
+
+    /**
      * Build formatted citation text and Word CSL data structure.
      * Uses Zotero Desktop's exact CSL output for parenthetical citations.
      */
@@ -189,14 +204,12 @@ var CitationManager = (function () {
         var formattedText = "";
 
         if (formatMode === "suppress" || isNarrative) {
-            // Narrative / Suppress mode: in-text field is (Year) or (Year, p. 42)
+            // Narrative / Suppress mode: in-text field is (Year) or (Year, pp. 42-44)
             var yearParts = items.map(function (item, idx) {
                 var citItem = citationItems[idx];
                 var y = item.year || "";
                 if (citItem.locator) {
-                    var loc = citItem.locator.trim();
-                    if (!/^(p\.|pp\.|chap\.|sec\.)/i.test(loc)) loc = "p. " + loc;
-                    y += ", " + loc;
+                    y += ", " + formatLocator(citItem.locator);
                 }
                 if (citItem.prefix) {
                     y = citItem.prefix.trim() + " " + y;
@@ -214,7 +227,6 @@ var CitationManager = (function () {
                 var citItem = citationItems[idx];
                 var zotCit = cleanText(item.citation || "");
 
-                // Fallback only if Zotero API didn't return a citation string
                 if (!zotCit) {
                     zotCit = "(" + (item.authors || "Unknown") + (item.year ? (", " + item.year) : "") + ")";
                 }
@@ -223,7 +235,6 @@ var CitationManager = (function () {
                     isNumeric = true;
                 }
 
-                // Strip outer brackets for clustering
                 var inner = zotCit;
                 if ((inner.startsWith("(") && inner.endsWith(")")) || (inner.startsWith("[") && inner.endsWith("]"))) {
                     inner = inner.slice(1, -1).trim();
@@ -233,10 +244,7 @@ var CitationManager = (function () {
                     inner = citItem.prefix.trim() + " " + inner;
                 }
                 if (citItem.locator) {
-                    var loc = citItem.locator.trim();
-                    if (!/^(p\.|pp\.|chap\.|sec\.)/i.test(loc) && !isNumeric) {
-                        loc = "p. " + loc;
-                    }
+                    var loc = isNumeric ? citItem.locator.trim() : formatLocator(citItem.locator);
                     inner = inner + ", " + loc;
                 }
                 if (citItem.suffix) {

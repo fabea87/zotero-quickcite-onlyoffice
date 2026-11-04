@@ -239,7 +239,7 @@
                 showToast("Style set to " + (styleTitle || newStyle));
             }
             updateLivePreview();
-            performSearch(cleanSearchQuery(els.searchInput.value));
+            performSearch(parseInlineShortcuts(els.searchInput.value).query);
         }).catch(function (err) {
             showToast("Reformat error: " + err.message, true);
         });
@@ -581,23 +581,58 @@
         updateLivePreview();
     }
 
-    // ========== Searching & Colon Page Parsing ==========
+    // ========== Inline Omnibar DSL Parser (#AD, #A, #D, #p, #s, :page-range) ==========
 
-    function cleanSearchQuery(raw) {
-        if (!raw) return "";
-        var colonMatch = raw.match(/:([0-9\-]+)$/);
-        var pageMatch = raw.match(/\s+p\.?\s*([0-9\-]+)$/i);
+    function parseInlineShortcuts(raw) {
+        if (!raw) return { query: "", locator: null, prefix: null, suffix: null, mode: null };
 
+        var text = raw;
+        var locator = null;
+        var prefix = null;
+        var suffix = null;
+        var mode = null;
+
+        // 1. Page locator or range: ':42', ':42-44', ':15–18', 'p. 42', 'pp. 42-44'
+        var colonMatch = text.match(/:([0-9\-\u2013,]+)(?=[#\s]|$)/);
         if (colonMatch) {
-            els.inputLocator.value = colonMatch[1];
-            updateLivePreview();
-            return raw.substring(0, colonMatch.index).trim();
-        } else if (pageMatch) {
-            els.inputLocator.value = pageMatch[1];
-            updateLivePreview();
-            return raw.substring(0, pageMatch.index).trim();
+            locator = colonMatch[1];
+            text = text.replace(colonMatch[0], " ");
+        } else {
+            var pageMatch = text.match(/\b(?:p|pp)\.?\s*([0-9\-\u2013,]+)(?=[#\s]|$)/i);
+            if (pageMatch) {
+                locator = pageMatch[1];
+                text = text.replace(pageMatch[0], " ");
+            }
         }
-        return raw.trim();
+
+        // 2. Prefix (#p<prefix>) and Suffix (#s<suffix>)
+        // Matches what follows #p or #s until next # or : or end of line
+        var prefixMatch = text.match(/#p([^\s#:][^#]*?)(?=(?:#[a-z0-9]|:[0-9]|$))/i);
+        if (prefixMatch) {
+            prefix = prefixMatch[1];
+            text = text.replace(prefixMatch[0], " ");
+        }
+
+        var suffixMatch = text.match(/#s([^\s#:][^#]*?)(?=(?:#[a-z0-9]|:[0-9]|$))/i);
+        if (suffixMatch) {
+            suffix = suffixMatch[1];
+            text = text.replace(suffixMatch[0], " ");
+        }
+
+        // 3. Citation mode flags: #AD, #A, #D (case-insensitive)
+        if (/#ad(?=[^a-z0-9]|$)/i.test(text)) {
+            mode = "parenthetical";
+            text = text.replace(/#ad(?=[^a-z0-9]|$)/i, " ");
+        } else if (/#a(?=[^a-z0-9]|$)/i.test(text)) {
+            mode = "narrative";
+            text = text.replace(/#a(?=[^a-z0-9]|$)/i, " ");
+        } else if (/#d(?=[^a-z0-9]|$)/i.test(text)) {
+            mode = "suppress";
+            text = text.replace(/#d(?=[^a-z0-9]|$)/i, " ");
+        }
+
+        var cleanQuery = text.replace(/\s+/g, " ").trim();
+        return { query: cleanQuery, locator: locator, prefix: prefix, suffix: suffix, mode: mode };
     }
 
     var activeSearchSeq = 0;
@@ -608,7 +643,24 @@
             els.searchClear.style.display = rawVal.length ? "block" : "none";
         }
 
-        var query = cleanSearchQuery(rawVal);
+        var parsed = parseInlineShortcuts(rawVal);
+
+        if (parsed.locator !== null) {
+            els.inputLocator.value = parsed.locator;
+        }
+        if (parsed.prefix !== null) {
+            els.inputPrefix.value = parsed.prefix;
+        }
+        if (parsed.suffix !== null) {
+            els.inputSuffix.value = parsed.suffix;
+        }
+        if (parsed.mode !== null) {
+            setFormatMode(parsed.mode);
+        } else {
+            updateLivePreview();
+        }
+
+        var query = parsed.query;
 
         if (state.searchTimer) clearTimeout(state.searchTimer);
         state.searchTimer = setTimeout(function () {
@@ -964,7 +1016,7 @@
 
         els.librarySelect.onchange = function (e) {
             state.activeLibrary = e.target.value;
-            performSearch(cleanSearchQuery(els.searchInput.value));
+            performSearch(parseInlineShortcuts(els.searchInput.value).query);
         };
 
         els.styleSearchInput.addEventListener("input", function (e) {
