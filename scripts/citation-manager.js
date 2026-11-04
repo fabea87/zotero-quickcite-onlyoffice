@@ -178,32 +178,52 @@ var CitationManager = (function () {
 
     /**
      * Locate existing bibliography representation in document:
-     * Checks Word AddinField (ADDIN ZOTERO_BIBL / ZOTERO_BIBLIOGRAPHY) and ONLYOFFICE ContentControl (ZOTERO_BIBLIOGRAPHY)
+     * Checks ONLYOFFICE ContentControl (ZOTERO_BIBLIOGRAPHY), Word AddinField (ADDIN ZOTERO_BIBL),
+     * or document References/Bibliography heading section.
      */
     function getBibliographyInfo() {
         return new Promise(function (resolve) {
             try {
-                window.Asc.plugin.executeMethod("GetAllAddinFields", null, function (fields) {
-                    if (Array.isArray(fields)) {
-                        for (var i = 0; i < fields.length; i++) {
-                            var f = fields[i];
-                            if (f && f.Value && (f.Value.indexOf("ZOTERO_BIBL") !== -1 || f.Value.indexOf("ZOTERO_BIBLIOGRAPHY") !== -1)) {
-                                resolve({ type: "addinField", field: f });
+                window.Asc.plugin.executeMethod("GetAllContentControls", null, function (controls) {
+                    if (Array.isArray(controls)) {
+                        for (var j = 0; j < controls.length; j++) {
+                            var c = controls[j];
+                            if (c && (c.Tag === "ZOTERO_BIBLIOGRAPHY" || c.InternalId === "ZOTERO_BIBLIOGRAPHY")) {
+                                resolve({ type: "contentControl", control: c });
                                 return;
                             }
                         }
                     }
-                    window.Asc.plugin.executeMethod("GetAllContentControls", null, function (controls) {
-                        if (Array.isArray(controls)) {
-                            for (var j = 0; j < controls.length; j++) {
-                                var c = controls[j];
-                                if (c && (c.Tag === "ZOTERO_BIBLIOGRAPHY" || c.InternalId === "ZOTERO_BIBLIOGRAPHY")) {
-                                    resolve({ type: "contentControl", control: c });
+
+                    window.Asc.plugin.executeMethod("GetAllAddinFields", null, function (fields) {
+                        if (Array.isArray(fields)) {
+                            for (var i = 0; i < fields.length; i++) {
+                                var f = fields[i];
+                                if (f && f.Value && (f.Value.indexOf("ZOTERO_BIBL") !== -1 || f.Value.indexOf("ZOTERO_BIBLIOGRAPHY") !== -1)) {
+                                    resolve({ type: "addinField", field: f });
                                     return;
                                 }
                             }
                         }
-                        resolve(null);
+
+                        // Also check if document has a References / Bibliography heading
+                        window.Asc.plugin.callCommand(function () {
+                            var doc = Api.GetDocument();
+                            var paras = doc.GetAllParagraphs();
+                            for (var p = 0; p < paras.length; p++) {
+                                var txt = paras[p].GetText().trim();
+                                if (/^(references|bibliography|参考文献)\b/i.test(txt)) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }, false, true, function (hasRefSection) {
+                            if (hasRefSection) {
+                                resolve({ type: "headingSection" });
+                            } else {
+                                resolve(null);
+                            }
+                        });
                     });
                 });
             } catch (e) {
@@ -609,10 +629,11 @@ var CitationManager = (function () {
             var newKeys = (citationData.citationObj.citationItems || []).map(function (it) {
                 return getItemKey(it);
             });
-            setTimeout(function () {
-                autoUpgradeBibliography(activeStyle, newKeys);
-            }, 50);
-            return result;
+            return autoUpgradeBibliography(activeStyle, newKeys).then(function () {
+                return result;
+            }).catch(function () {
+                return result;
+            });
         });
     }
 
@@ -633,10 +654,11 @@ var CitationManager = (function () {
                     var extraKeys = (citationData.citationObj.citationItems || []).map(function (it) {
                         return getItemKey(it);
                     });
-                    setTimeout(function () {
-                        autoUpgradeBibliography(activeStyle, extraKeys);
-                    }, 50);
-                    resolve(updatedField);
+                    autoUpgradeBibliography(activeStyle, extraKeys).then(function () {
+                        resolve(updatedField);
+                    }).catch(function () {
+                        resolve(updatedField);
+                    });
                 }).catch(function () {
                     resolve(updatedField);
                 });
@@ -650,10 +672,11 @@ var CitationManager = (function () {
     function removeCitation(fieldId, activeStyle) {
         return new Promise(function (resolve) {
             window.Asc.plugin.executeMethod("RemoveAddinField", [fieldId], function () {
-                setTimeout(function () {
-                    autoUpgradeBibliography(activeStyle);
-                }, 50);
-                resolve();
+                autoUpgradeBibliography(activeStyle).then(function () {
+                    resolve();
+                }).catch(function () {
+                    resolve();
+                });
             });
         });
     }
@@ -751,133 +774,123 @@ var CitationManager = (function () {
 
     /**
      * Insert or update bibliography in document with standard Hanging Indent (悬挂缩进)
-     * Supports both MS Word-compatible AddinField (ADDIN ZOTERO_BIBL) and ONLYOFFICE ContentControl.
+     * Every single entry is created as its own ApiParagraph with 0.5" hanging indent,
+     * Times New Roman, and full CSL bold/italic runs.
      */
-    function updateBibliographyInDoc(htmlBib, entries, bibInfo) {
+    function updateBibliographyInDoc(htmlBib, entries) {
         return new Promise(function (resolve, reject) {
-            var bibLines = entries.map(function (e) {
-                return e.map(function (r) { return r.text; }).join("");
-            });
-            var allBibText = bibLines.join("\n\n");
+            window.Asc.scope.bibEntries = entries;
 
-            // 1. If an AddinField exists in document (Word format from Manu.docx or previous save):
-            if (bibInfo && bibInfo.type === "addinField" && bibInfo.field && bibInfo.field.FieldId) {
-                var updatedBibField = {
-                    FieldId: bibInfo.field.FieldId,
-                    Value: bibInfo.field.Value || BIB_PREFIX,
-                    Content: allBibText
-                };
+            // Remove any legacy Word AddinField for the bibliography
+            window.Asc.plugin.executeMethod("GetAllAddinFields", null, function (fields) {
+                var oldBibFields = [];
+                if (Array.isArray(fields)) {
+                    oldBibFields = fields.filter(function (f) {
+                        return f && f.Value && (f.Value.indexOf("ZOTERO_BIBL") !== -1 || f.Value.indexOf("ZOTERO_BIBLIOGRAPHY") !== -1);
+                    });
+                }
 
-                var finished = false;
-                var timeout = setTimeout(function () {
-                    if (!finished) {
-                        finished = true;
-                        resolve(entries.length);
-                    }
-                }, 1200);
+                function proceedWithDocUpdate() {
+                    window.Asc.plugin.callCommand(function () {
+                        var doc = Api.GetDocument();
+                        var entries = Asc.scope.bibEntries;
 
-                try {
-                    window.Asc.plugin.executeMethod("UpdateAddinFields", [[updatedBibField]], function () {
-                        window.Asc.scope.bibEntries = entries;
-                        window.Asc.plugin.callCommand(function () {
-                            var doc = Api.GetDocument();
-                            var paras = doc.GetAllParagraphs();
-                            var inRef = false;
-                            for (var p = 0; p < paras.length; p++) {
-                                var text = paras[p].GetText().trim();
-                                if (!inRef) {
-                                    if (/^(references|bibliography|参考文献)\b/i.test(text)) {
-                                        inRef = true;
-                                    }
-                                } else {
-                                    paras[p].SetFontFamily("Times New Roman");
-                                    paras[p].SetIndLeft(720);        // 0.5" hanging indent
-                                    paras[p].SetIndFirstLine(-720);  // -0.5" first line
-                                    paras[p].SetSpacingAfter(140);
-                                    paras[p].SetSpacingLine(276, "multiple");
+                        // 1. Check if ContentControl already exists:
+                        var controls = doc.GetContentControlsByTag("ZOTERO_BIBLIOGRAPHY");
+                        if (controls && controls.length > 0) {
+                            var oBlockLvlSdt = controls[0];
+                            oBlockLvlSdt.RemoveAllElements();
+
+                            for (var i = 0; i < entries.length; i++) {
+                                var oParagraph = Api.CreateParagraph();
+                                oParagraph.SetFontFamily("Times New Roman");
+                                oParagraph.SetIndLeft(720);        // 0.5" hanging indent
+                                oParagraph.SetIndFirstLine(-720);  // -0.5" first line
+                                oParagraph.SetSpacingAfter(140);   // ~7pt space
+                                oParagraph.SetSpacingLine(276, "multiple");
+
+                                var runs = entries[i];
+                                for (var j = 0; j < runs.length; j++) {
+                                    var rData = runs[j];
+                                    var oRun = oParagraph.AddText(rData.text);
+                                    oRun.SetFontFamily("Times New Roman");
+                                    if (rData.italic) oRun.SetItalic(true);
+                                    if (rData.bold) oRun.SetBold(true);
                                 }
+                                oBlockLvlSdt.AddElement(oParagraph);
                             }
-                        }, false, true, function () {
-                            if (!finished) {
-                                finished = true;
-                                clearTimeout(timeout);
-                                resolve(entries.length);
+                            return true;
+                        }
+
+                        // 2. If ContentControl does not exist (e.g. Manu.docx from Word):
+                        // Look for the "References" or "Bibliography" heading paragraph:
+                        var paras = doc.GetAllParagraphs();
+                        var refPara = null;
+                        var refIdx = -1;
+
+                        for (var p = 0; p < paras.length; p++) {
+                            var text = paras[p].GetText().trim();
+                            if (/^(references|bibliography|参考文献)\b/i.test(text)) {
+                                refPara = paras[p];
+                                refIdx = p;
+                                break;
                             }
+                        }
+
+                        // Create the clean BlockLvlSdt container
+                        var oNewBlockLvlSdt = Api.CreateBlockLvlSdt();
+                        oNewBlockLvlSdt.SetTag("ZOTERO_BIBLIOGRAPHY");
+                        oNewBlockLvlSdt.SetAlias("Zotero Bibliography");
+
+                        for (var e = 0; e < entries.length; e++) {
+                            var oPara = Api.CreateParagraph();
+                            oPara.SetFontFamily("Times New Roman");
+                            oPara.SetIndLeft(720);        // 0.5" hanging indent
+                            oPara.SetIndFirstLine(-720);  // -0.5" first line
+                            oPara.SetSpacingAfter(140);   // ~7pt space
+                            oPara.SetSpacingLine(276, "multiple");
+
+                            var rList = entries[e];
+                            for (var k = 0; k < rList.length; k++) {
+                                var runData = rList[k];
+                                var rObj = oPara.AddText(runData.text);
+                                rObj.SetFontFamily("Times New Roman");
+                                if (runData.italic) rObj.SetItalic(true);
+                                if (runData.bold) rObj.SetBold(true);
+                            }
+                            oNewBlockLvlSdt.AddElement(oPara);
+                        }
+
+                        if (refPara && refIdx !== -1) {
+                            // Delete any old trailing bibliography paragraphs following References:
+                            for (var d = paras.length - 1; d > refIdx; d--) {
+                                paras[d].Delete();
+                            }
+                            // Move cursor to end (immediately after References) and insert the new bibliography:
+                            doc.MoveCursorToEnd();
+                            doc.InsertContent([oNewBlockLvlSdt]);
+                        } else {
+                            // Brand new document or cursor location:
+                            doc.InsertContent([oNewBlockLvlSdt]);
+                        }
+
+                        return true;
+                    }, false, true, function () {
+                        resolve(entries ? entries.length : 1);
+                    });
+                }
+
+                if (oldBibFields.length > 0) {
+                    var remaining = oldBibFields.length;
+                    oldBibFields.forEach(function (f) {
+                        window.Asc.plugin.executeMethod("RemoveAddinField", [f.FieldId], function () {
+                            remaining--;
+                            if (remaining <= 0) proceedWithDocUpdate();
                         });
                     });
-                } catch (e) {
-                    if (!finished) {
-                        finished = true;
-                        clearTimeout(timeout);
-                        resolve(entries.length);
-                    }
+                } else {
+                    proceedWithDocUpdate();
                 }
-                return;
-            }
-
-            // 2. If a ContentControl exists (ONLYOFFICE BlockLvlSdt format):
-            if (bibInfo && bibInfo.type === "contentControl") {
-                window.Asc.scope.bibEntries = entries;
-                window.Asc.plugin.callCommand(function () {
-                    var oDocument = Api.GetDocument();
-                    var entries = Asc.scope.bibEntries;
-                    var controls = oDocument.GetContentControlsByTag("ZOTERO_BIBLIOGRAPHY");
-                    if (!controls || controls.length === 0) return;
-                    var oBlockLvlSdt = controls[0];
-                    oBlockLvlSdt.RemoveAllElements();
-                    for (var i = 0; i < entries.length; i++) {
-                        var oParagraph = Api.CreateParagraph();
-                        oParagraph.SetFontFamily("Times New Roman");
-                        oParagraph.SetIndLeft(720);
-                        oParagraph.SetIndFirstLine(-720);
-                        oParagraph.SetSpacingAfter(140);
-                        oParagraph.SetSpacingLine(276, "multiple");
-                        var runs = entries[i];
-                        for (var j = 0; j < runs.length; j++) {
-                            var rData = runs[j];
-                            var oRun = oParagraph.AddText(rData.text);
-                            oRun.SetFontFamily("Times New Roman");
-                            if (rData.italic) oRun.SetItalic(true);
-                            if (rData.bold) oRun.SetBold(true);
-                        }
-                        oBlockLvlSdt.AddElement(oParagraph);
-                    }
-                }, false, true, function () {
-                    resolve(entries.length);
-                });
-                return;
-            }
-
-            // 3. If neither exists (brand new document insertion):
-            window.Asc.scope.bibEntries = entries;
-            window.Asc.plugin.callCommand(function () {
-                var oDocument = Api.GetDocument();
-                var entries = Asc.scope.bibEntries;
-                var oBlockLvlSdt = Api.CreateBlockLvlSdt();
-                oBlockLvlSdt.SetTag("ZOTERO_BIBLIOGRAPHY");
-                oBlockLvlSdt.SetAlias("Zotero Bibliography");
-
-                for (var i = 0; i < entries.length; i++) {
-                    var oParagraph = Api.CreateParagraph();
-                    oParagraph.SetFontFamily("Times New Roman");
-                    oParagraph.SetIndLeft(720);
-                    oParagraph.SetIndFirstLine(-720);
-                    oParagraph.SetSpacingAfter(140);
-                    oParagraph.SetSpacingLine(276, "multiple");
-
-                    var runs = entries[i];
-                    for (var j = 0; j < runs.length; j++) {
-                        var rData = runs[j];
-                        var oRun = oParagraph.AddText(rData.text);
-                        oRun.SetFontFamily("Times New Roman");
-                        if (rData.italic) oRun.SetItalic(true);
-                        if (rData.bold) oRun.SetBold(true);
-                    }
-                    oBlockLvlSdt.AddElement(oParagraph);
-                }
-                oDocument.InsertContent([oBlockLvlSdt]);
-            }, false, true, function () {
-                resolve(entries ? entries.length : 1);
             });
         });
     }
@@ -887,37 +900,35 @@ var CitationManager = (function () {
      * and strictly defaults to Times New Roman.
      */
     function insertBibliography(style) {
-        return getBibliographyInfo().then(function (existingInfo) {
-            return getAllCitationFields().then(function (fields) {
-                if (!fields.length) {
-                    throw new Error("No citations found in document. Insert at least one citation first.");
+        return getAllCitationFields().then(function (fields) {
+            if (!fields.length) {
+                throw new Error("No citations found in document. Insert at least one citation first.");
+            }
+
+            var keysSet = {};
+            fields.forEach(function (f) {
+                (f.citationItems || []).forEach(function (it) {
+                    var k = getItemKey(it);
+                    if (k) keysSet[k] = true;
+                });
+            });
+            var keys = Object.keys(keysSet);
+            if (!keys.length) {
+                throw new Error("No valid citation keys found.");
+            }
+
+            return ZoteroAPI.getBibliography(keys, 0, style).then(function (htmlBib) {
+                if (!htmlBib) {
+                    throw new Error("Failed to generate bibliography from Zotero.");
                 }
 
-                var keysSet = {};
-                fields.forEach(function (f) {
-                    (f.citationItems || []).forEach(function (it) {
-                        var k = getItemKey(it);
-                        if (k) keysSet[k] = true;
-                    });
-                });
-                var keys = Object.keys(keysSet);
-                if (!keys.length) {
-                    throw new Error("No valid citation keys found.");
+                var entries = parseBibHtml(htmlBib);
+                if (!entries.length) {
+                    throw new Error("No bibliography entries could be parsed.");
                 }
 
-                return ZoteroAPI.getBibliography(keys, 0, style).then(function (htmlBib) {
-                    if (!htmlBib) {
-                        throw new Error("Failed to generate bibliography from Zotero.");
-                    }
-
-                    var entries = parseBibHtml(htmlBib);
-                    if (!entries.length) {
-                        throw new Error("No bibliography entries could be parsed.");
-                    }
-
-                    setDocumentZoteroStyle(style);
-                    return updateBibliographyInDoc(htmlBib, entries, existingInfo);
-                });
+                setDocumentZoteroStyle(style);
+                return updateBibliographyInDoc(htmlBib, entries);
             });
         });
     }
@@ -926,37 +937,103 @@ var CitationManager = (function () {
      * Automatically upgrade the bibliography list in the document whenever citations change
      */
     function autoUpgradeBibliography(style, extraKeys) {
-        return getBibliographyInfo().then(function (bibInfo) {
-            if (!bibInfo) return; // Only upgrade if a bibliography already exists in the document
+        return new Promise(function (resolve) {
+            var finished = false;
+            var timer = setTimeout(function () {
+                if (!finished) {
+                    finished = true;
+                    resolve();
+                }
+            }, 3000);
 
-            return getAllCitationFields().then(function (fields) {
-                var keysSet = {};
-                fields.forEach(function (f) {
-                    (f.citationItems || []).forEach(function (it) {
-                        var k = getItemKey(it);
-                        if (k) keysSet[k] = true;
-                    });
-                });
-
-                if (Array.isArray(extraKeys)) {
-                    extraKeys.forEach(function (k) {
-                        if (k) keysSet[k] = true;
-                    });
+            getBibliographyInfo().then(function (bibInfo) {
+                if (!bibInfo) {
+                    if (!finished) {
+                        finished = true;
+                        clearTimeout(timer);
+                        resolve();
+                    }
+                    return;
                 }
 
-                var keys = Object.keys(keysSet);
-                if (!keys.length) return;
+                getAllCitationFields().then(function (fields) {
+                    var keysSet = {};
+                    fields.forEach(function (f) {
+                        (f.citationItems || []).forEach(function (it) {
+                            var k = getItemKey(it);
+                            if (k) keysSet[k] = true;
+                        });
+                    });
 
-                return ZoteroAPI.getBibliography(keys, 0, style).then(function (htmlBib) {
-                    if (!htmlBib) return;
-                    var entries = parseBibHtml(htmlBib);
-                    if (!entries.length) return;
+                    if (Array.isArray(extraKeys)) {
+                        extraKeys.forEach(function (k) {
+                            if (k) keysSet[k] = true;
+                        });
+                    }
 
-                    return updateBibliographyInDoc(htmlBib, entries, bibInfo);
+                    var keys = Object.keys(keysSet);
+                    if (!keys.length) {
+                        if (!finished) {
+                            finished = true;
+                            clearTimeout(timer);
+                            resolve();
+                        }
+                        return;
+                    }
+
+                    ZoteroAPI.getBibliography(keys, 0, style).then(function (htmlBib) {
+                        if (!htmlBib) {
+                            if (!finished) {
+                                finished = true;
+                                clearTimeout(timer);
+                                resolve();
+                            }
+                            return;
+                        }
+                        var entries = parseBibHtml(htmlBib);
+                        if (!entries.length) {
+                            if (!finished) {
+                                finished = true;
+                                clearTimeout(timer);
+                                resolve();
+                            }
+                            return;
+                        }
+
+                        updateBibliographyInDoc(htmlBib, entries).then(function () {
+                            if (!finished) {
+                                finished = true;
+                                clearTimeout(timer);
+                                resolve();
+                            }
+                        }).catch(function () {
+                            if (!finished) {
+                                finished = true;
+                                clearTimeout(timer);
+                                resolve();
+                            }
+                        });
+                    }).catch(function () {
+                        if (!finished) {
+                            finished = true;
+                            clearTimeout(timer);
+                            resolve();
+                        }
+                    });
+                }).catch(function () {
+                    if (!finished) {
+                        finished = true;
+                        clearTimeout(timer);
+                        resolve();
+                    }
                 });
+            }).catch(function () {
+                if (!finished) {
+                    finished = true;
+                    clearTimeout(timer);
+                    resolve();
+                }
             });
-        }).catch(function (err) {
-            console.warn("Auto-upgrade error:", err);
         });
     }
 
