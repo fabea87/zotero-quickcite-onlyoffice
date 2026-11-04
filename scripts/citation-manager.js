@@ -159,6 +159,10 @@ var CitationManager = (function () {
             authorPart = inner;
         }
 
+        // In running narrative prose, if the style generated an ampersand '&' (e.g. APA 'Teng & Zhang'),
+        // spell out 'and' (APA 7th §8.11: in narrative citations, spell out 'and' in running text)
+        authorPart = authorPart.replace(/\s*&\s*/g, " and ");
+
         var inParen = yearPart;
         if (locator) {
             inParen += (inParen ? ", " : "") + formatLocator(locator);
