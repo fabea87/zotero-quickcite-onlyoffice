@@ -76,6 +76,11 @@
         els.btnClose = document.getElementById("btnClose");
         els.toast = document.getElementById("toast");
 
+        // Progress Overlay Elements (Windows Zotero style)
+        els.submittingOverlay = document.getElementById("submittingOverlay");
+        els.submittingTitle = document.getElementById("submittingTitle");
+        els.submittingSubtitle = document.getElementById("submittingSubtitle");
+
         // Style Manager Elements
         els.styleModal = document.getElementById("styleModal");
         els.retainedStylesList = document.getElementById("retainedStylesList");
@@ -91,6 +96,20 @@
         setTimeout(function () {
             els.toast.className = "toast";
         }, 2800);
+    }
+
+    function showSubmittingState(title, subtitle) {
+        if (!els.submittingOverlay) return;
+        if (els.submittingTitle) els.submittingTitle.textContent = title || "Updating Document...";
+        if (els.submittingSubtitle) els.submittingSubtitle.textContent = subtitle || "Writing citation & updating bibliography...";
+        els.submittingOverlay.style.display = "flex";
+        if (els.searchInput) els.searchInput.blur();
+    }
+
+    function hideSubmittingState() {
+        if (els.submittingOverlay) {
+            els.submittingOverlay.style.display = "none";
+        }
     }
 
     function closeModal() {
@@ -885,16 +904,23 @@
         var citationData = CitationManager.buildCitation(state.selectedItems, options);
         var targetFieldId = state.editingField ? (state.editingField.fieldId || state.editingField.FieldId || (state.editingField.rawField && state.editingField.rawField.FieldId)) : null;
 
+        showSubmittingState(
+            state.mode === "edit" ? "Updating Citation..." : "Inserting Citation...",
+            "Writing to document & synchronizing bibliography..."
+        );
+
         if (state.mode === "edit" && targetFieldId) {
             CitationManager.updateCitation(targetFieldId, citationData, state.activeStyle).then(function () {
                 closeModal();
             }).catch(function (err) {
+                hideSubmittingState();
                 showToast("Update failed: " + err.message, true);
             });
         } else {
             CitationManager.insertCitation(citationData, isFootnote, state.activeStyle).then(function () {
                 closeModal();
             }).catch(function (err) {
+                hideSubmittingState();
                 showToast("Insert failed: " + err.message, true);
             });
         }
@@ -902,8 +928,12 @@
 
     function deleteCurrentCitation() {
         if (state.editingField) {
+            showSubmittingState("Deleting Citation...", "Removing citation & updating bibliography...");
             CitationManager.removeCitation(state.editingField.fieldId, state.activeStyle).then(function () {
                 closeModal();
+            }).catch(function (err) {
+                hideSubmittingState();
+                showToast("Delete failed: " + err.message, true);
             });
         }
     }
@@ -922,15 +952,19 @@
     function handleSyncBibliography() {
         var isRefresh = (els.btnBibliography.textContent.indexOf("Refresh") !== -1 || els.btnBibliography.textContent.indexOf("🔄") !== -1);
         els.btnBibliography.disabled = true;
-        els.btnBibliography.textContent = "Syncing from Zotero...";
+
+        showSubmittingState(
+            isRefresh ? "Synchronizing with Zotero..." : "Generating Bibliography...",
+            "Formatting entries in Times New Roman with hanging indents..."
+        );
 
         if (isRefresh) {
-            showToast("Refreshing citations & bibliography from Zotero...");
             CitationManager.reformatDocumentStyle(state.activeStyle).then(function (count) {
                 updateBibButtonState(true);
                 showToast("✓ Synchronized " + count + " citation(s) and reference list from Zotero!");
                 setTimeout(closeModal, 600);
             }).catch(function (err) {
+                hideSubmittingState();
                 els.btnBibliography.disabled = false;
                 updateBibButtonState(true);
                 showToast("Sync error: " + err.message, true);
@@ -941,6 +975,7 @@
                 showToast("✓ Bibliography inserted in Times New Roman with hanging indents (" + count + " entries)!");
                 setTimeout(closeModal, 600);
             }).catch(function (err) {
+                hideSubmittingState();
                 els.btnBibliography.disabled = false;
                 updateBibButtonState(false);
                 showToast("Bibliography error: " + err.message, true);
@@ -950,9 +985,13 @@
 
     function handleUnlink() {
         if (confirm("Unlink all Zotero citations in this document? This converts all fields into plain text.")) {
+            showSubmittingState("Unlinking Citations...", "Converting citations to plain text...");
             CitationManager.unlinkAll().then(function (count) {
                 showToast("Unlinked " + count + " citation(s).");
                 setTimeout(closeModal, 600);
+            }).catch(function (err) {
+                hideSubmittingState();
+                showToast("Unlink error: " + err.message, true);
             });
         }
     }
@@ -983,6 +1022,11 @@
 
         // Global pure-keyboard handling
         document.addEventListener("keydown", function (e) {
+            if (els.submittingOverlay && els.submittingOverlay.style.display === "flex") {
+                e.preventDefault();
+                return;
+            }
+
             var key = e.key;
 
             if (key === "Escape") {
