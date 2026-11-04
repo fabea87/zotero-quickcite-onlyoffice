@@ -903,14 +903,28 @@ var CitationManager = (function () {
      * Remove citation field from document, then awaits auto-upgrading bibliography
      */
     function removeCitation(fieldId, activeStyle) {
-        return new Promise(function (resolve) {
-            window.Asc.plugin.executeMethod("RemoveAddinField", [fieldId], function () {
-                autoUpgradeBibliography(activeStyle).then(function () {
-                    resolve();
-                }).catch(function () {
-                    resolve();
+        var isBookmark = (fieldId && String(fieldId).indexOf("ZOTERO_BREF_") === 0);
+        if (isBookmark) {
+            window.Asc.scope.delBmark = fieldId;
+            return new Promise(function (resolve) {
+                window.Asc.plugin.callCommand(function () {
+                    var doc = Api.GetDocument();
+                    if (doc.DeleteBookmark) doc.DeleteBookmark(Asc.scope.delBmark);
+                    var props = doc.GetCustomProperties ? doc.GetCustomProperties() : null;
+                    if (props && props.Remove) props.Remove(Asc.scope.delBmark);
+                }, false, true, function () {
+                    autoUpgradeBibliography(activeStyle).then(resolve).catch(resolve);
                 });
             });
+        }
+
+        return new Promise(function (resolve) {
+            try {
+                window.Asc.plugin.executeMethod("RemoveAddinField", [fieldId]);
+            } catch (e) {
+                console.warn("RemoveAddinField error:", e);
+            }
+            autoUpgradeBibliography(activeStyle).then(resolve).catch(resolve);
         });
     }
 
@@ -1155,16 +1169,13 @@ var CitationManager = (function () {
                 }
 
                 if (oldBibFields.length > 0) {
-                    var remaining = oldBibFields.length;
                     oldBibFields.forEach(function (f) {
-                        window.Asc.plugin.executeMethod("RemoveAddinField", [f.FieldId], function () {
-                            remaining--;
-                            if (remaining <= 0) proceedWithDocUpdate();
-                        });
+                        try {
+                            window.Asc.plugin.executeMethod("RemoveAddinField", [f.FieldId]);
+                        } catch (e) {}
                     });
-                } else {
-                    proceedWithDocUpdate();
                 }
+                proceedWithDocUpdate();
             });
         });
     }

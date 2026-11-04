@@ -98,21 +98,35 @@
         }, 2800);
     }
 
+    var submittingTimer = null;
+
     function showSubmittingState(title, subtitle) {
         if (!els.submittingOverlay) return;
         if (els.submittingTitle) els.submittingTitle.textContent = title || "Updating Document...";
         if (els.submittingSubtitle) els.submittingSubtitle.textContent = subtitle || "Writing citation & updating bibliography...";
         els.submittingOverlay.style.display = "flex";
         if (els.searchInput) els.searchInput.blur();
+
+        if (submittingTimer) clearTimeout(submittingTimer);
+        // Fail-safe auto-dismiss: if document write ever exceeds 3.5s, force close modal
+        submittingTimer = setTimeout(function () {
+            hideSubmittingState();
+            closeModal();
+        }, 3500);
     }
 
     function hideSubmittingState() {
+        if (submittingTimer) {
+            clearTimeout(submittingTimer);
+            submittingTimer = null;
+        }
         if (els.submittingOverlay) {
             els.submittingOverlay.style.display = "none";
         }
     }
 
     function closeModal() {
+        hideSubmittingState();
         try {
             window.Asc.plugin.executeCommand("close", "");
         } catch (e) {
