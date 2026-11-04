@@ -682,47 +682,33 @@ body {
     font-family: monospace;
 }
 
-/* Progress / Submitting Overlay (Windows Zotero Progress Bar Style) */
+/* Progress / Submitting Overlay (Windows Zotero Solid Style) */
 .submitting-overlay {
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.45);
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
+    background: var(--bg-main, #ffffff);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 99999;
     user-select: none;
     -webkit-user-select: none;
-    animation: fadeInOverlay 0.15s ease-out;
-}
-
-@keyframes fadeInOverlay {
-    from { opacity: 0; }
-    to { opacity: 1; }
 }
 
 .submitting-card {
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
+    background: var(--bg-surface, #f8f9fa);
+    border: 1px solid var(--border-color, #dee2e6);
     border-radius: 12px;
-    padding: 22px 26px;
-    width: 380px;
+    padding: 26px 30px;
+    width: 420px;
     max-width: 90%;
-    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
     display: flex;
     flex-direction: column;
-    gap: 15px;
-    animation: scaleCard 0.18s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes scaleCard {
-    from { transform: scale(0.94); opacity: 0; }
-    to { transform: scale(1); opacity: 1; }
+    gap: 16px;
 }
 
 .submitting-header {
@@ -735,7 +721,7 @@ body {
     width: 36px;
     height: 36px;
     border-radius: 8px;
-    background: #CC2936;
+    background: var(--accent-red, #cc2936);
     color: #ffffff;
     display: flex;
     align-items: center;
@@ -743,7 +729,7 @@ body {
     font-size: 20px;
     font-weight: 800;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    box-shadow: 0 4px 10px rgba(204, 41, 54, 0.35);
+    box-shadow: 0 2px 6px rgba(204, 41, 54, 0.25);
     flex-shrink: 0;
 }
 
@@ -769,20 +755,14 @@ body {
     text-overflow: ellipsis;
 }
 
-/* Windows Fluent-style Animated Progress Bar */
+/* Windows Fluent-style Solid Animated Progress Bar */
 .progress-track {
     width: 100%;
-    height: 4px;
-    background: rgba(0, 0, 0, 0.08);
-    border-radius: 2px;
+    height: 6px;
+    background: var(--border-color, #dee2e6);
+    border-radius: 3px;
     overflow: hidden;
     position: relative;
-}
-
-@media (prefers-color-scheme: dark) {
-    .progress-track {
-        background: rgba(255, 255, 255, 0.12);
-    }
 }
 
 .progress-bar-animated {
@@ -790,23 +770,23 @@ body {
     top: 0;
     left: 0;
     bottom: 0;
-    background: #CC2936;
-    border-radius: 2px;
-    width: 35%;
+    background: var(--accent-red, #cc2936);
+    border-radius: 3px;
+    width: 40%;
     animation: fluentProgress 1.4s infinite cubic-bezier(0.65, 0, 0.35, 1);
 }
 
 @keyframes fluentProgress {
     0% {
-        left: -35%;
-        width: 35%;
+        left: -40%;
+        width: 40%;
     }
     50% {
         width: 55%;
     }
     100% {
         left: 100%;
-        width: 35%;
+        width: 40%;
     }
 }
 

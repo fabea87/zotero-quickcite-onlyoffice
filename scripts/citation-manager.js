@@ -175,9 +175,10 @@ var CitationManager = (function () {
 
     /**
      * Get all Zotero citation fields in document (both AddinFields and ZOTERO_BREF_ Bookmarks)
+     * Queries AddinFields and Bookmarks concurrently for maximum responsiveness.
      */
     function getAllCitationFields() {
-        return new Promise(function (resolve) {
+        var pAddin = new Promise(function (res) {
             try {
                 window.Asc.plugin.executeMethod("GetAllAddinFields", null, function (fields) {
                     var zoteroFields = [];
@@ -189,41 +190,51 @@ var CitationManager = (function () {
                             }
                         });
                     }
+                    res(zoteroFields);
+                });
+            } catch (e) {
+                res([]);
+            }
+        });
 
-                    // Also check for ZOTERO_BREF_ bookmarks (Bookmark mode)
-                    window.Asc.plugin.callCommand(function () {
-                        var doc = Api.GetDocument();
-                        var bmarks = doc.GetAllBookmarksNames ? doc.GetAllBookmarksNames() : [];
-                        var list = [];
-                        var props = doc.GetCustomProperties ? doc.GetCustomProperties() : null;
-                        if (props && props.Get) {
-                            for (var i = 0; i < bmarks.length; i++) {
-                                var bm = bmarks[i];
-                                if (bm.indexOf("ZOTERO_BREF_") === 0) {
-                                    var val = props.Get(bm);
-                                    if (val) {
-                                        var rng = doc.GetBookmarkRange ? doc.GetBookmarkRange(bm) : null;
-                                        var txt = rng && rng.GetText ? rng.GetText() : "";
-                                        list.push({ FieldId: bm, Value: val, Content: txt, isBookmark: true });
-                                    }
+        var pBmarks = new Promise(function (res) {
+            try {
+                window.Asc.plugin.callCommand(function () {
+                    var doc = Api.GetDocument();
+                    var bmarks = doc.GetAllBookmarksNames ? doc.GetAllBookmarksNames() : [];
+                    var list = [];
+                    var props = doc.GetCustomProperties ? doc.GetCustomProperties() : null;
+                    if (props && props.Get) {
+                        for (var i = 0; i < bmarks.length; i++) {
+                            var bm = bmarks[i];
+                            if (bm.indexOf("ZOTERO_BREF_") === 0) {
+                                var val = props.Get(bm);
+                                if (val) {
+                                    var rng = doc.GetBookmarkRange ? doc.GetBookmarkRange(bm) : null;
+                                    var txt = rng && rng.GetText ? rng.GetText() : "";
+                                    list.push({ FieldId: bm, Value: val, Content: txt, isBookmark: true });
                                 }
                             }
                         }
-                        return list;
-                    }, false, true, function (bmarkList) {
-                        if (Array.isArray(bmarkList)) {
-                            bmarkList.forEach(function (bf) {
-                                var parsed = parseCitationField(bf);
-                                if (parsed) zoteroFields.push(parsed);
-                            });
-                        }
-                        resolve(zoteroFields);
-                    });
+                    }
+                    return list;
+                }, false, true, function (bmarkList) {
+                    var parsedList = [];
+                    if (Array.isArray(bmarkList)) {
+                        bmarkList.forEach(function (bf) {
+                            var parsed = parseCitationField(bf);
+                            if (parsed) parsedList.push(parsed);
+                        });
+                    }
+                    res(parsedList);
                 });
             } catch (e) {
-                console.warn("GetAllAddinFields failed:", e);
-                resolve([]);
+                res([]);
             }
+        });
+
+        return Promise.all([pAddin, pBmarks]).then(function (results) {
+            return results[0].concat(results[1]);
         });
     }
 
@@ -688,8 +699,45 @@ var CitationManager = (function () {
     }
 
     /**
-     * Insert citation into document, strictly setting Times New Roman font,
-     * syncing document style, and kicking off autoUpgradeBibliography in the background
+     * Pre-fetch updated bibliography HTML from Zotero concurrently with field editing
+     */
+    function prefetchBibliography(style, extraKeys, bypassCache) {
+        return getBibliographyInfo().then(function (bibInfo) {
+            if (!bibInfo) return null;
+
+            return getAllCitationFields().then(function (fields) {
+                var keysSet = {};
+                fields.forEach(function (f) {
+                    (f.citationItems || []).forEach(function (it) {
+                        var k = getItemKey(it);
+                        if (k) keysSet[k] = true;
+                    });
+                });
+
+                if (Array.isArray(extraKeys)) {
+                    extraKeys.forEach(function (k) {
+                        if (k) keysSet[k] = true;
+                    });
+                }
+
+                var keys = Object.keys(keysSet);
+                if (!keys.length) return null;
+
+                return ZoteroAPI.getBibliography(keys, 0, style, bypassCache).then(function (htmlBib) {
+                    if (!htmlBib) return null;
+                    var entries = parseBibHtml(htmlBib);
+                    return { htmlBib: htmlBib, entries: entries };
+                });
+            });
+        }).catch(function (e) {
+            console.warn("prefetchBibliography error:", e);
+            return null;
+        });
+    }
+
+    /**
+     * Insert citation into document with concurrent execution pipeline:
+     * Dispatches ONLYOFFICE field insertion and Zotero bibliography retrieval concurrently via Promise.all!
      */
     function insertCitation(citationData, isFootnote, activeStyle) {
         var fieldId = "ZOTERO_" + Date.now();
@@ -698,6 +746,10 @@ var CitationManager = (function () {
             Value: CIT_PREFIX + " " + JSON.stringify(citationData.citationObj),
             Content: citationData.formattedText
         };
+
+        var newKeys = (citationData.citationObj.citationItems || []).map(function (it) {
+            return getItemKey(it);
+        });
 
         function doAddField() {
             if (isFootnote) {
@@ -742,28 +794,41 @@ var CitationManager = (function () {
             }
         }
 
-        return doAddField().then(function (result) {
+        // CONCURRENT PIPELINE: Run ONLYOFFICE insertion and Zotero bibliography prefetch in parallel
+        var pInsert = doAddField();
+        var pBibPrep = prefetchBibliography(activeStyle, newKeys);
+
+        return Promise.all([pInsert, pBibPrep]).then(function (results) {
+            var fieldResult = results[0];
+            var bibData = results[1];
             setDocumentZoteroStyle(activeStyle);
-            var newKeys = (citationData.citationObj.citationItems || []).map(function (it) {
-                return getItemKey(it);
-            });
-            return autoUpgradeBibliography(activeStyle, newKeys).then(function () {
-                return result;
-            }).catch(function () {
-                return result;
-            });
+
+            if (bibData && bibData.htmlBib && bibData.entries && bibData.entries.length) {
+                return updateBibliographyInDoc(bibData.htmlBib, bibData.entries).then(function () {
+                    return fieldResult;
+                }).catch(function () {
+                    return fieldResult;
+                });
+            }
+            return fieldResult;
         });
     }
 
     /**
-     * Update existing citation in document, then awaits auto-upgrading bibliography
+     * Update existing citation in document with concurrent execution pipeline
      * Supports both AddinFields and ZOTERO_BREF_ Bookmarks
      */
     function updateCitation(fieldId, citationData, activeStyle) {
         var isBookmark = (fieldId && String(fieldId).indexOf("ZOTERO_BREF_") === 0);
+        var extraKeys = (citationData.citationObj.citationItems || []).map(function (it) {
+            return getItemKey(it);
+        });
+
+        // CONCURRENT PIPELINE: Prefetch bibliography concurrently with citation update
+        var pBibPrep = prefetchBibliography(activeStyle, extraKeys);
 
         if (isBookmark) {
-            return new Promise(function (resolve) {
+            var pBmarkUpdate = new Promise(function (resolve) {
                 window.Asc.scope.bmarkUpdate = {
                     bmarkName: fieldId,
                     value: CIT_PREFIX + " " + JSON.stringify(citationData.citationObj),
@@ -782,16 +847,23 @@ var CitationManager = (function () {
                         if (rng.SetFontFamily) rng.SetFontFamily("Times New Roman");
                     }
                 }, false, true, function () {
-                    setDocumentZoteroStyle(activeStyle);
-                    var extraKeys = (citationData.citationObj.citationItems || []).map(function (it) {
-                        return getItemKey(it);
-                    });
-                    autoUpgradeBibliography(activeStyle, extraKeys).then(function () {
-                        resolve({ FieldId: fieldId, Value: data.value, Content: data.text });
-                    }).catch(function () {
-                        resolve({ FieldId: fieldId, Value: data.value, Content: data.text });
-                    });
+                    resolve({ FieldId: fieldId, Value: Asc.scope.bmarkUpdate.value, Content: Asc.scope.bmarkUpdate.text });
                 });
+            });
+
+            return Promise.all([pBmarkUpdate, pBibPrep]).then(function (results) {
+                var fieldResult = results[0];
+                var bibData = results[1];
+                setDocumentZoteroStyle(activeStyle);
+
+                if (bibData && bibData.htmlBib && bibData.entries && bibData.entries.length) {
+                    return updateBibliographyInDoc(bibData.htmlBib, bibData.entries).then(function () {
+                        return fieldResult;
+                    }).catch(function () {
+                        return fieldResult;
+                    });
+                }
+                return fieldResult;
             });
         }
 
@@ -801,22 +873,29 @@ var CitationManager = (function () {
             Content: citationData.formattedText
         };
 
-        return new Promise(function (resolve) {
+        var pUpdate = new Promise(function (resolve) {
             window.Asc.plugin.executeMethod("UpdateAddinFields", [[updatedField]], function () {
                 applyFontToField(fieldId).then(function () {
-                    setDocumentZoteroStyle(activeStyle);
-                    var extraKeys = (citationData.citationObj.citationItems || []).map(function (it) {
-                        return getItemKey(it);
-                    });
-                    autoUpgradeBibliography(activeStyle, extraKeys).then(function () {
-                        resolve(updatedField);
-                    }).catch(function () {
-                        resolve(updatedField);
-                    });
+                    resolve(updatedField);
                 }).catch(function () {
                     resolve(updatedField);
                 });
             });
+        });
+
+        return Promise.all([pUpdate, pBibPrep]).then(function (results) {
+            var fieldResult = results[0];
+            var bibData = results[1];
+            setDocumentZoteroStyle(activeStyle);
+
+            if (bibData && bibData.htmlBib && bibData.entries && bibData.entries.length) {
+                return updateBibliographyInDoc(bibData.htmlBib, bibData.entries).then(function () {
+                    return fieldResult;
+                }).catch(function () {
+                    return fieldResult;
+                });
+            }
+            return fieldResult;
         });
     }
 
@@ -1234,7 +1313,7 @@ var CitationManager = (function () {
 
     /**
      * Reformat all citations and bibliography across the entire document to a new CSL style.
-     * Fully compatible with citations from MS Word or ONLYOFFICE.
+     * Concurrently retrieves items and bibliography from Zotero to cut reformat latency in half!
      */
     function reformatDocumentStyle(newStyle) {
         return getAllCitationFields().then(function (fields) {
@@ -1254,9 +1333,16 @@ var CitationManager = (function () {
             var allKeys = Object.keys(allKeysSet);
             if (!allKeys.length) return 0;
 
-            return ZoteroAPI.getItemsByKeys(allKeys, 0, newStyle).then(function (items) {
+            // CONCURRENT PIPELINE: Fetch in-text items and bibliography concurrently
+            return Promise.all([
+                ZoteroAPI.getItemsByKeys(allKeys, 0, newStyle),
+                ZoteroAPI.getBibliography(allKeys, 0, newStyle)
+            ]).then(function (results) {
+                var items = results[0] || [];
+                var htmlBib = results[1] || "";
+
                 var itemMap = {};
-                (items || []).forEach(function (it) {
+                items.forEach(function (it) {
                     itemMap[it.key] = it;
                 });
 
@@ -1305,19 +1391,17 @@ var CitationManager = (function () {
                     });
                 });
 
-                if (updatedFields.length > 0) {
-                    return new Promise(function (resolve) {
-                        window.Asc.plugin.executeMethod("UpdateAddinFields", [updatedFields], function () {
-                            setDocumentZoteroStyle(newStyle);
-                            autoUpgradeBibliography(newStyle, allKeys).then(function () {
-                                resolve(updatedFields.length);
-                            }).catch(function () {
-                                resolve(updatedFields.length);
-                            });
-                        });
-                    });
-                }
-                return 0;
+                var pDocFields = updatedFields.length > 0 ? new Promise(function (res) {
+                    window.Asc.plugin.executeMethod("UpdateAddinFields", [updatedFields], res);
+                }) : Promise.resolve();
+
+                var entries = parseBibHtml(htmlBib);
+                var pBib = entries.length > 0 ? updateBibliographyInDoc(htmlBib, entries) : Promise.resolve();
+
+                return Promise.all([pDocFields, pBib]).then(function () {
+                    setDocumentZoteroStyle(newStyle);
+                    return updatedFields.length;
+                });
             });
         });
     }

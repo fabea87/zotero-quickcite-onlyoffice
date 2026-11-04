@@ -14,6 +14,28 @@ var ZoteroAPI = (function () {
     var _isConnected = false;
     var _userGroups = [];
 
+    // High-performance in-memory cache for API queries and normalized items
+    var _cache = {};
+    var _itemMap = {};
+    var CACHE_TTL_MS = 120000; // 2-minute TTL
+
+    function getCached(url) {
+        var entry = _cache[url];
+        if (entry && (Date.now() - entry.time < CACHE_TTL_MS)) {
+            return entry.data;
+        }
+        return null;
+    }
+
+    function setCache(url, data) {
+        _cache[url] = { time: Date.now(), data: data };
+    }
+
+    function clearCache() {
+        _cache = {};
+        _itemMap = {};
+    }
+
     /**
      * Decode HTML entities and strip Unicode directional isolates/zero-width chars
      */
@@ -89,9 +111,16 @@ var ZoteroAPI = (function () {
     }
 
     /**
-     * Unified HTTP GET request dispatcher with safe 12-second timeout
+     * Unified HTTP GET request dispatcher with in-memory caching and safe 12-second timeout
      */
-    function sendGet(url, timeoutMs) {
+    function sendGet(url, timeoutMs, bypassCache) {
+        if (!bypassCache) {
+            var hit = getCached(url);
+            if (hit !== null) {
+                return Promise.resolve(hit);
+            }
+        }
+
         timeoutMs = timeoutMs || 12000; // Generous 12s timeout so large queries never prematurely fail
         var client = getSimpleRequestClient();
 
@@ -110,7 +139,9 @@ var ZoteroAPI = (function () {
                                      ((res && res.statusCode !== undefined) ? res.statusCode : 200);
 
                         if (status === 200 || status === 201) {
-                            resolve(res.responseText || "");
+                            var text = res.responseText || "";
+                            setCache(url, text);
+                            resolve(text);
                         } else if (status === 403) {
                             reject(new Error("Permission denied. Enable 'Allow other applications' in Zotero Advanced Settings."));
                         } else {
@@ -134,6 +165,9 @@ var ZoteroAPI = (function () {
         }).then(function (res) {
             if (!res.ok) throw new Error("HTTP " + res.status);
             return res.text();
+        }).then(function (text) {
+            setCache(url, text);
+            return text;
         });
     }
 
@@ -183,15 +217,17 @@ var ZoteroAPI = (function () {
             } catch (e) {
                 console.warn("Failed to parse items JSON:", e);
             }
-            return (data || []).map(normalizeItem);
+            var items = (data || []).map(normalizeItem);
+            items.forEach(function (it) {
+                _itemMap[lib + ":" + it.key + ":" + cslStyle] = it;
+            });
+            return items;
         });
     }
 
     /**
-     * Agentic Multi-Tier Smart Search:
-     * Tier 1: Exact query (e.g. "Yan meta 2026")
-     * Tier 2: Year extraction fallback (extracts 4-digit year, queries textual terms, and ranks target year first)
-     * Tier 3: Query relaxation fallback for 3+ words (drops auxiliary word to recover relevant hits)
+     * Agentic Concurrent Multi-Tier Smart Search:
+     * Fires exact and year-targeted queries in parallel to eliminate sequential search latency!
      */
     function searchItems(query, libraryId, style) {
         if (!query || !query.trim()) {
@@ -200,35 +236,42 @@ var ZoteroAPI = (function () {
 
         var cleanQ = query.trim();
 
-        // Tier 1: Try exact query
+        // Check if query contains a 4-digit year (e.g. 2026 or 2025)
+        var yearMatch = cleanQ.match(/\b(19\d\d|20\d\d)\b/);
+        if (yearMatch) {
+            var targetYear = yearMatch[1];
+            var queryNoYear = cleanQ.replace(/\b(19\d\d|20\d\d)\b/g, "").replace(/\s+/g, " ").trim();
+
+            if (queryNoYear) {
+                // Execute Tier 1 (exact) and Tier 2 (year extracted) concurrently!
+                return Promise.all([
+                    rawSearch(cleanQ, libraryId, style),
+                    rawSearch(queryNoYear, libraryId, style)
+                ]).then(function (results) {
+                    var tier1 = results[0] || [];
+                    var tier2 = results[1] || [];
+
+                    if (tier1.length > 0) return tier1;
+
+                    if (tier2.length > 0) {
+                        var matchingYear = tier2.filter(function (it) {
+                            return it.year === targetYear || (it.raw && it.raw.data && String(it.raw.data.date).indexOf(targetYear) !== -1);
+                        });
+                        var otherYears = tier2.filter(function (it) {
+                            return it.year !== targetYear && (!it.raw || !it.raw.data || String(it.raw.data.date).indexOf(targetYear) === -1);
+                        });
+                        return matchingYear.concat(otherYears);
+                    }
+
+                    return tryRelaxedSearch(cleanQ, libraryId, style);
+                });
+            }
+        }
+
         return rawSearch(cleanQ, libraryId, style).then(function (results) {
             if (results && results.length > 0) {
                 return results;
             }
-
-            // Tier 2: Check if query contains a 4-digit year (e.g. 2026 or 2025)
-            var yearMatch = cleanQ.match(/\b(19\d\d|20\d\d)\b/);
-            if (yearMatch) {
-                var targetYear = yearMatch[1];
-                var queryNoYear = cleanQ.replace(/\b(19\d\d|20\d\d)\b/g, "").replace(/\s+/g, " ").trim();
-
-                if (queryNoYear) {
-                    return rawSearch(queryNoYear, libraryId, style).then(function (noYearResults) {
-                        if (noYearResults && noYearResults.length > 0) {
-                            var matchingYear = noYearResults.filter(function (it) {
-                                return it.year === targetYear || (it.raw && it.raw.data && String(it.raw.data.date).indexOf(targetYear) !== -1);
-                            });
-                            var otherYears = noYearResults.filter(function (it) {
-                                return it.year !== targetYear && (!it.raw || !it.raw.data || String(it.raw.data.date).indexOf(targetYear) === -1);
-                            });
-                            return matchingYear.concat(otherYears);
-                        }
-                        return tryRelaxedSearch(cleanQ, libraryId, style);
-                    });
-                }
-            }
-
-            // Tier 3: Query relaxation for 3+ words
             return tryRelaxedSearch(cleanQ, libraryId, style);
         });
     }
@@ -245,41 +288,70 @@ var ZoteroAPI = (function () {
     }
 
     /**
-     * Get item details by keys
+     * Get item details by keys with item-level caching
      */
-    function getItemsByKeys(keys, libraryId, style) {
+    function getItemsByKeys(keys, libraryId, style, bypassCache) {
         if (!keys || !keys.length) return Promise.resolve([]);
         var lib = (libraryId && libraryId !== "0" && libraryId !== 0) ? ("groups/" + libraryId) : "users/0";
         var cslStyle = style || "apa";
 
-        var url = BASE_URL + "/api/" + lib + "/items?itemKey=" + encodeURIComponent(keys.join(",")) + "&itemType=-attachment&include=citation,data&style=" + encodeURIComponent(cslStyle);
+        var missingKeys = [];
+        var foundItems = [];
 
-        return sendGet(url, 8000).then(function (rawText) {
+        if (!bypassCache) {
+            keys.forEach(function (k) {
+                var cacheKey = lib + ":" + k + ":" + cslStyle;
+                if (_itemMap[cacheKey]) {
+                    foundItems.push(_itemMap[cacheKey]);
+                } else {
+                    missingKeys.push(k);
+                }
+            });
+        } else {
+            missingKeys = keys.slice();
+        }
+
+        if (missingKeys.length === 0) {
+            return Promise.resolve(foundItems);
+        }
+
+        var url = BASE_URL + "/api/" + lib + "/items?itemKey=" + encodeURIComponent(missingKeys.join(",")) + "&itemType=-attachment&include=citation,data&style=" + encodeURIComponent(cslStyle);
+
+        return sendGet(url, 8000, bypassCache).then(function (rawText) {
             var data = [];
             try {
                 data = JSON.parse(rawText);
             } catch (e) {
                 console.warn("Failed to parse items JSON:", e);
             }
-            return (data || [])
+            var fetched = (data || [])
                 .filter(function (it) {
                     return it && (!it.data || it.data.itemType !== "attachment");
                 })
                 .map(normalizeItem);
+
+            fetched.forEach(function (item) {
+                var cacheKey = lib + ":" + item.key + ":" + cslStyle;
+                _itemMap[cacheKey] = item;
+            });
+
+            return foundItems.concat(fetched);
         });
     }
 
     /**
-     * Get formatted bibliography for keys
+     * Get formatted bibliography for keys with deterministic key sorting
      */
-    function getBibliography(keys, libraryId, style) {
+    function getBibliography(keys, libraryId, style, bypassCache) {
         if (!keys || !keys.length) return Promise.resolve("");
         var lib = (libraryId && libraryId !== "0" && libraryId !== 0) ? ("groups/" + libraryId) : "users/0";
         var cslStyle = style || "apa";
 
-        var url = BASE_URL + "/api/" + lib + "/items?itemKey=" + encodeURIComponent(keys.join(",")) + "&itemType=-attachment&format=bib&style=" + encodeURIComponent(cslStyle);
+        // Sort keys so caching is invariant to insertion order
+        var sortedKeys = keys.slice().sort();
+        var url = BASE_URL + "/api/" + lib + "/items?itemKey=" + encodeURIComponent(sortedKeys.join(",")) + "&itemType=-attachment&format=bib&style=" + encodeURIComponent(cslStyle);
 
-        return sendGet(url, 12000);
+        return sendGet(url, 12000, bypassCache);
     }
 
     /**
@@ -360,6 +432,7 @@ var ZoteroAPI = (function () {
         getBibliography: getBibliography,
         getGroups: getGroups,
         decodeHtmlAndClean: decodeHtmlAndClean,
+        clearCache: clearCache,
         isConnected: function () { return _isConnected; }
     };
 })();

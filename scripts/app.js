@@ -130,14 +130,23 @@
 
         initStyleDropdown();
 
-        ZoteroAPI.ping().then(function (connected) {
+        // CONCURRENT INITIALIZATION: Pre-warm all connections & document state in parallel
+        Promise.all([
+            ZoteroAPI.ping(),
+            CitationManager.getDocumentZoteroStyle(),
+            CitationManager.getCurrentField(),
+            CitationManager.hasBibliography()
+        ]).then(function (results) {
+            var connected = results[0];
+            var docStyle = results[1];
+            var currentField = results[2];
+            var hasBib = results[3];
+
             updateConnectionStatus(connected);
             if (connected) {
                 loadGroups();
             }
-        });
 
-        CitationManager.getDocumentZoteroStyle().then(function (docStyle) {
             if (docStyle) {
                 var cleanStyle = docStyle.replace(/^http:\/\/www\.zotero\.org\/styles\//, "").trim();
                 if (cleanStyle) {
@@ -159,22 +168,17 @@
                     initStyleDropdown();
                 }
             }
-        });
 
-        CitationManager.getCurrentField().then(function (field) {
-            if (field) {
-                setupEditMode(field);
+            if (currentField) {
+                setupEditMode(currentField);
             } else {
                 setupInsertMode();
             }
-        }).catch(function (err) {
-            console.warn("Error detecting current field:", err);
-            setupInsertMode();
-        });
 
-        // Detect if bibliography already exists (in AddinField or ContentControl)
-        CitationManager.hasBibliography().then(function (hasBib) {
             updateBibButtonState(hasBib);
+        }).catch(function (err) {
+            console.warn("Init error:", err);
+            setupInsertMode();
         });
     };
 
