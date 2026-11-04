@@ -70,6 +70,7 @@
         els.livePreview = document.getElementById("livePreview");
         els.btnPrimary = document.getElementById("btnPrimary");
         els.btnFootnote = document.getElementById("btnFootnote");
+        els.btnRefresh = document.getElementById("btnRefresh");
         els.btnBibliography = document.getElementById("btnBibliography");
         els.btnUnlink = document.getElementById("btnUnlink");
         els.btnDeleteCitation = document.getElementById("btnDeleteCitation");
@@ -103,13 +104,47 @@
 
     // ========== Initialization ==========
 
-    window.Asc.plugin.init = function () {
+    window.Asc.plugin.init = function (initData) {
+        var action = (typeof initData === "string" ? initData.trim() : "") || (window.Asc.plugin.initData || "citation");
+
+        // Non-visual background ribbon variations
+        if (action === "refresh") {
+            CitationManager.reformatDocumentStyle(state.activeStyle).then(function () {
+                closeModal();
+            }).catch(function () {
+                closeModal();
+            });
+            return;
+        }
+
+        if (action === "bibliography") {
+            CitationManager.insertBibliography(state.activeStyle).then(function () {
+                closeModal();
+            }).catch(function () {
+                closeModal();
+            });
+            return;
+        }
+
+        if (action === "unlink") {
+            CitationManager.unlinkAll().then(function () {
+                closeModal();
+            }).catch(function () {
+                closeModal();
+            });
+            return;
+        }
+
         getElements();
         loadRetainedStyles();
         setupEvents();
         setupContextMenu();
 
         initStyleDropdown();
+
+        if (action === "preferences") {
+            openStyleModal();
+        }
 
         ZoteroAPI.ping().then(function (connected) {
             updateConnectionStatus(connected);
@@ -167,13 +202,29 @@
         if (window.Asc && window.Asc.ButtonContextMenu && window.Asc.Buttons) {
             try {
                 var editBtn = new window.Asc.ButtonContextMenu();
-                editBtn.text = "✏️ Edit Zotero Citation";
+                editBtn.text = "✏️ Add/Edit Zotero Citation";
                 editBtn.addCheckers("Target", "Selection");
                 editBtn.attachOnClick(function () {
                     CitationManager.getCurrentField().then(function (field) {
                         if (field) setupEditMode(field);
+                        else setupInsertMode();
                     });
                 });
+
+                var refreshBtn = new window.Asc.ButtonContextMenu();
+                refreshBtn.text = "🔄 Refresh Zotero Document";
+                refreshBtn.addCheckers("Target", "Selection");
+                refreshBtn.attachOnClick(function () {
+                    handleRefreshDocument();
+                });
+
+                var bibBtn = new window.Asc.ButtonContextMenu();
+                bibBtn.text = "📚 Insert / Update Bibliography";
+                bibBtn.addCheckers("Target", "Selection");
+                bibBtn.attachOnClick(function () {
+                    handleInsertBibliography();
+                });
+
                 window.Asc.Buttons.registerContextMenu();
             } catch (e) {
                 console.warn("Context menu registration:", e);
@@ -910,6 +961,30 @@
         }
     }
 
+    function handleRefreshDocument() {
+        if (els.btnRefresh) {
+            els.btnRefresh.disabled = true;
+            els.btnRefresh.textContent = "Syncing...";
+        }
+        showToast("Refreshing all citations & bibliography from Zotero Desktop...");
+
+        CitationManager.reformatDocumentStyle(state.activeStyle).then(function (count) {
+            if (els.btnRefresh) {
+                els.btnRefresh.disabled = false;
+                els.btnRefresh.textContent = "🔄 Refresh (Alt+R)";
+            }
+            showToast("✓ Synchronized " + count + " citation(s) and reference list from Zotero!");
+            updateBibButtonState(true);
+            setTimeout(closeModal, 800);
+        }).catch(function (err) {
+            if (els.btnRefresh) {
+                els.btnRefresh.disabled = false;
+                els.btnRefresh.textContent = "🔄 Refresh (Alt+R)";
+            }
+            showToast("Refresh error: " + err.message, true);
+        });
+    }
+
     function handleInsertBibliography() {
         var isUpdate = (els.btnBibliography.textContent.indexOf("Update") !== -1);
         els.btnBibliography.disabled = true;
@@ -1001,6 +1076,10 @@
                     els.searchInput.focus();
                     els.searchInput.select();
                     return;
+                } else if (lowerKey === "r") {
+                    e.preventDefault();
+                    handleRefreshDocument();
+                    return;
                 } else if (lowerKey === "b") {
                     e.preventDefault();
                     handleInsertBibliography();
@@ -1072,6 +1151,9 @@
 
         els.btnPrimary.onclick = function () { submitCitation(false); };
         els.btnFootnote.onclick = function () { submitCitation(true); };
+        if (els.btnRefresh) {
+            els.btnRefresh.onclick = handleRefreshDocument;
+        }
         els.btnDeleteCitation.onclick = deleteCurrentCitation;
         els.btnBibliography.onclick = handleInsertBibliography;
         els.btnUnlink.onclick = handleUnlink;

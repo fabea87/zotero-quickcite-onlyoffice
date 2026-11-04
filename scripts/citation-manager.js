@@ -132,7 +132,7 @@ var CitationManager = (function () {
     }
 
     /**
-     * Get the addin field at current cursor position
+     * Get the addin field at current cursor position (with Bookmark mode fallback)
      */
     function getCurrentField() {
         return new Promise(function (resolve) {
@@ -140,9 +140,31 @@ var CitationManager = (function () {
                 window.Asc.plugin.executeMethod("GetCurrentAddinField", null, function (field) {
                     if (field && field.Value && field.Value.indexOf("ZOTERO_ITEM") !== -1) {
                         resolve(parseCitationField(field));
-                    } else {
-                        resolve(null);
+                        return;
                     }
+                    // Bookmark mode fallback (e.g. ZOTERO_BREF_ from Word/LibreOffice/Google Docs)
+                    window.Asc.plugin.executeMethod("GetCurrentBookmark", null, function (bmarkName) {
+                        if (bmarkName && bmarkName.indexOf("ZOTERO_BREF_") === 0) {
+                            window.Asc.scope.targetBmark = bmarkName;
+                            window.Asc.plugin.callCommand(function () {
+                                var bm = Asc.scope.targetBmark;
+                                var doc = Api.GetDocument();
+                                var props = doc.GetCustomProperties ? doc.GetCustomProperties() : null;
+                                var val = props && props.Get ? props.Get(bm) : "";
+                                var rng = doc.GetBookmarkRange ? doc.GetBookmarkRange(bm) : null;
+                                var txt = rng && rng.GetText ? rng.GetText() : "";
+                                return { FieldId: bm, Value: val, Content: txt, isBookmark: true };
+                            }, false, true, function (res) {
+                                if (res && res.Value) {
+                                    resolve(parseCitationField(res));
+                                } else {
+                                    resolve(null);
+                                }
+                            });
+                        } else {
+                            resolve(null);
+                        }
+                    });
                 });
             } catch (e) {
                 console.warn("GetCurrentAddinField failed:", e);
@@ -152,7 +174,7 @@ var CitationManager = (function () {
     }
 
     /**
-     * Get all Zotero citation fields in document
+     * Get all Zotero citation fields in document (both AddinFields and ZOTERO_BREF_ Bookmarks)
      */
     function getAllCitationFields() {
         return new Promise(function (resolve) {
@@ -167,7 +189,36 @@ var CitationManager = (function () {
                             }
                         });
                     }
-                    resolve(zoteroFields);
+
+                    // Also check for ZOTERO_BREF_ bookmarks (Bookmark mode)
+                    window.Asc.plugin.callCommand(function () {
+                        var doc = Api.GetDocument();
+                        var bmarks = doc.GetAllBookmarksNames ? doc.GetAllBookmarksNames() : [];
+                        var list = [];
+                        var props = doc.GetCustomProperties ? doc.GetCustomProperties() : null;
+                        if (props && props.Get) {
+                            for (var i = 0; i < bmarks.length; i++) {
+                                var bm = bmarks[i];
+                                if (bm.indexOf("ZOTERO_BREF_") === 0) {
+                                    var val = props.Get(bm);
+                                    if (val) {
+                                        var rng = doc.GetBookmarkRange ? doc.GetBookmarkRange(bm) : null;
+                                        var txt = rng && rng.GetText ? rng.GetText() : "";
+                                        list.push({ FieldId: bm, Value: val, Content: txt, isBookmark: true });
+                                    }
+                                }
+                            }
+                        }
+                        return list;
+                    }, false, true, function (bmarkList) {
+                        if (Array.isArray(bmarkList)) {
+                            bmarkList.forEach(function (bf) {
+                                var parsed = parseCitationField(bf);
+                                if (parsed) zoteroFields.push(parsed);
+                            });
+                        }
+                        resolve(zoteroFields);
+                    });
                 });
             } catch (e) {
                 console.warn("GetAllAddinFields failed:", e);
@@ -391,7 +442,57 @@ var CitationManager = (function () {
     }
 
     /**
+     * Academic Cluster Auto-Sorting Comparator (APA 7th §8.12, Chicago §15.30):
+     * Sorts multiple citations in a cluster alphabetically by first author's surname,
+     * then chronologically by publication year, then by title.
+     */
+    function getPrimaryAuthorLastName(item) {
+        if (!item) return "";
+        if (item.authors) {
+            var first = item.authors.split(/[,&]|\bet al/i)[0].trim().toLowerCase();
+            return first;
+        }
+        if (item.raw && item.raw.data && Array.isArray(item.raw.data.creators) && item.raw.data.creators.length > 0) {
+            var c = item.raw.data.creators[0];
+            return (c.lastName || c.name || "").trim().toLowerCase();
+        }
+        if (item.itemData && Array.isArray(item.itemData.author) && item.itemData.author.length > 0) {
+            var a = item.itemData.author[0];
+            return (a.family || a.name || "").trim().toLowerCase();
+        }
+        return (item.title || "").trim().toLowerCase();
+    }
+
+    function getItemYear(item) {
+        if (!item) return 0;
+        if (item.year) {
+            var m = String(item.year).match(/\b(19\d\d|20\d\d)\b/);
+            if (m) return parseInt(m[1], 10);
+        }
+        if (item.raw && item.raw.meta && item.raw.meta.parsedDate) {
+            return parseInt(item.raw.meta.parsedDate.substring(0, 4), 10) || 0;
+        }
+        return 0;
+    }
+
+    function compareCitationClusterItems(a, b) {
+        var authorA = getPrimaryAuthorLastName(a);
+        var authorB = getPrimaryAuthorLastName(b);
+        var cmp = authorA.localeCompare(authorB);
+        if (cmp !== 0) return cmp;
+
+        var yearA = getItemYear(a);
+        var yearB = getItemYear(b);
+        if (yearA !== yearB) return yearA - yearB;
+
+        var titleA = (a.title || "").trim().toLowerCase();
+        var titleB = (b.title || "").trim().toLowerCase();
+        return titleA.localeCompare(titleB);
+    }
+
+    /**
      * Build formatted citation text and Word CSL data structure.
+     * Auto-sorts multiple citations in parenthetical/suppress-author clusters (APA 7th §8.12).
      * Preserves CSL-JSON itemData, URIs, locators, prefixes, and suffixes.
      */
     function buildCitation(items, options) {
@@ -407,11 +508,28 @@ var CitationManager = (function () {
         var narrativeAuthor = "";
         var formattedText = "";
 
-        var citationItems = items.map(function (item, idx) {
+        // Standard Academic Cluster Auto-Sorting:
+        // In parenthetical or suppress-author mode, auto-sort cluster items
+        // alphabetically by author and chronologically by year (APA 7th §8.12, Chicago §15.30)
+        var clusterItems = items.map(function (it, idx) {
+            var clone = Object.assign({}, it);
+            if (idx === 0) {
+                if (locator) clone.locator = locator;
+                if (prefix) clone.prefix = prefix;
+                if (suffix) clone.suffix = suffix;
+            }
+            return clone;
+        });
+
+        if (!isNarrative && clusterItems.length > 1 && !options.manualOrder) {
+            clusterItems.sort(compareCitationClusterItems);
+        }
+
+        var citationItems = clusterItems.map(function (item, idx) {
             var isPrimary = (idx === 0);
-            var itemLocator = isPrimary ? locator : (item.locator || "");
-            var itemPrefix = isPrimary ? prefix : (item.prefix || "");
-            var itemSuffix = isPrimary ? suffix : (item.suffix || "");
+            var itemLocator = item.locator || "";
+            var itemPrefix = item.prefix || "";
+            var itemSuffix = item.suffix || "";
             var itemSuppress = isPrimary ? isSuppress : (item["suppress-author"] || false);
             var itemKey = getItemKey(item);
 
@@ -452,7 +570,7 @@ var CitationManager = (function () {
             narrativeAuthor = narrative.author;
         } else if (isSuppress) {
             // YEAR ONLY: (2026) or (2026, pp. 42-44)
-            var yearParts = items.map(function (item, idx) {
+            var yearParts = clusterItems.map(function (item, idx) {
                 var citItem = citationItems[idx];
                 var y = item.year || "";
                 if (citItem.locator) {
@@ -470,7 +588,7 @@ var CitationManager = (function () {
         } else {
             // PARENTHETICAL: DIRECTLY USE ZOTERO DESKTOP'S EXACT CSL OUTPUT
             var isNumeric = false;
-            var parts = items.map(function (item, idx) {
+            var parts = clusterItems.map(function (item, idx) {
                 var citItem = citationItems[idx];
                 var zotCit = cleanText(item.citation || "");
 
@@ -639,8 +757,44 @@ var CitationManager = (function () {
 
     /**
      * Update existing citation in document, then awaits auto-upgrading bibliography
+     * Supports both AddinFields and ZOTERO_BREF_ Bookmarks
      */
     function updateCitation(fieldId, citationData, activeStyle) {
+        var isBookmark = (fieldId && String(fieldId).indexOf("ZOTERO_BREF_") === 0);
+
+        if (isBookmark) {
+            return new Promise(function (resolve) {
+                window.Asc.scope.bmarkUpdate = {
+                    bmarkName: fieldId,
+                    value: CIT_PREFIX + " " + JSON.stringify(citationData.citationObj),
+                    text: citationData.formattedText
+                };
+                window.Asc.plugin.callCommand(function () {
+                    var data = Asc.scope.bmarkUpdate;
+                    var doc = Api.GetDocument();
+                    var props = doc.GetCustomProperties ? doc.GetCustomProperties() : null;
+                    if (props && props.Add) {
+                        props.Add(data.bmarkName, data.value);
+                    }
+                    var rng = doc.GetBookmarkRange ? doc.GetBookmarkRange(data.bmarkName) : null;
+                    if (rng) {
+                        if (rng.SetText) rng.SetText(data.text);
+                        if (rng.SetFontFamily) rng.SetFontFamily("Times New Roman");
+                    }
+                }, false, true, function () {
+                    setDocumentZoteroStyle(activeStyle);
+                    var extraKeys = (citationData.citationObj.citationItems || []).map(function (it) {
+                        return getItemKey(it);
+                    });
+                    autoUpgradeBibliography(activeStyle, extraKeys).then(function () {
+                        resolve({ FieldId: fieldId, Value: data.value, Content: data.text });
+                    }).catch(function () {
+                        resolve({ FieldId: fieldId, Value: data.value, Content: data.text });
+                    });
+                });
+            });
+        }
+
         var updatedField = {
             FieldId: fieldId,
             Value: CIT_PREFIX + " " + JSON.stringify(citationData.citationObj),
@@ -1169,28 +1323,47 @@ var CitationManager = (function () {
     }
 
     /**
-     * Unlink all citations (convert fields to plain text)
+     * Unlink all citations (convert fields and bookmarks to plain text)
      */
     function unlinkAll() {
         return new Promise(function (resolve) {
             window.Asc.plugin.executeMethod("GetAllAddinFields", null, function (fields) {
-                if (!Array.isArray(fields) || !fields.length) {
-                    resolve(0);
+                var zoteroFields = [];
+                if (Array.isArray(fields)) {
+                    zoteroFields = fields.filter(function (f) {
+                        return f && f.Value && (f.Value.indexOf("ZOTERO_ITEM") !== -1 || f.Value.indexOf("ZOTERO_BIBL") !== -1 || f.Value.indexOf("ZOTERO_BIBLIOGRAPHY") !== -1);
+                    });
+                }
+
+                function doCleanBookmarksAndControls(addinsUnlinked) {
+                    window.Asc.plugin.callCommand(function () {
+                        var doc = Api.GetDocument();
+                        var count = 0;
+                        var bmarks = doc.GetAllBookmarksNames ? doc.GetAllBookmarksNames() : [];
+                        for (var i = 0; i < bmarks.length; i++) {
+                            if (bmarks[i].indexOf("ZOTERO_BREF_") === 0) {
+                                if (doc.DeleteBookmark) doc.DeleteBookmark(bmarks[i]);
+                                count++;
+                            }
+                        }
+                        return count;
+                    }, false, true, function (bmarkCount) {
+                        resolve((addinsUnlinked || 0) + (bmarkCount || 0));
+                    });
+                }
+
+                if (!zoteroFields.length) {
+                    doCleanBookmarksAndControls(0);
                     return;
                 }
-                var zoteroFields = fields.filter(function (f) {
-                    return f.Value && (f.Value.indexOf("ZOTERO_ITEM") !== -1 || f.Value.indexOf("ZOTERO_BIBL") !== -1 || f.Value.indexOf("ZOTERO_BIBLIOGRAPHY") !== -1);
-                });
-                var count = zoteroFields.length;
-                if (!count) {
-                    resolve(0);
-                    return;
-                }
-                var remaining = count;
+
+                var remaining = zoteroFields.length;
                 zoteroFields.forEach(function (f) {
                     window.Asc.plugin.executeMethod("RemoveFieldWrapper", [f.FieldId], function () {
                         remaining--;
-                        if (remaining <= 0) resolve(count);
+                        if (remaining <= 0) {
+                            doCleanBookmarksAndControls(zoteroFields.length);
+                        }
                     });
                 });
             });

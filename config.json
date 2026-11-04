@@ -8,13 +8,13 @@
 		"zh-CN": "Zotero 快速引文"
 	},
 	"guid": "asc.{B7A5C98E-892F-4E44-9B05-6D4B892FE01A}",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"minVersion": "7.3.3",
 	"variations": [
 		{
-			"description": "Word-like floating search & insert dialog for Zotero with bidirectional field editing, narrative citations, custom CSL styles, and hanging-indent bibliographies.",
+			"description": "Add / Edit Citation",
 			"descriptionLocale": {
-				"zh-CN": "仿照 Word 体验的 Zotero 浮动搜索与插入弹窗，支持双向引文编辑、叙述性引用（Author (Year)）、自定义 CSL 样式与悬挂缩进参考文献。"
+				"zh-CN": "添加或编辑引文 (Add/Edit Citation)"
 			},
 			"url": "index.html",
 			"icons": [ "resources/light/icon.png", "resources/light/icon@2x.png" ],
@@ -39,7 +39,7 @@
 			"isViewer": false,
 			"EditorsSupport": [ "word" ],
 			"initDataType": "text",
-			"initData": "",
+			"initData": "citation",
 			"isVisual": true,
 			"isModal": true,
 			"isInsideMode": false,
@@ -60,6 +60,143 @@
 				},
 				"categories": ["specAbilities", "work"]
 			}
+		},
+		{
+			"description": "Refresh Document",
+			"descriptionLocale": {
+				"zh-CN": "刷新文档引文与文后文献 (Refresh Document)"
+			},
+			"url": "index.html",
+			"icons": [ "resources/light/icon.png", "resources/light/icon@2x.png" ],
+			"icons2": [
+				{
+					"style": "light",
+					"100%": { "normal": "resources/light/icon.png" },
+					"125%": { "normal": "resources/light/icon@1.25x.png" },
+					"150%": { "normal": "resources/light/icon@1.5x.png" },
+					"175%": { "normal": "resources/light/icon@1.75x.png" },
+					"200%": { "normal": "resources/light/icon@2x.png" }
+				},
+				{
+					"style": "dark",
+					"100%": { "normal": "resources/dark/icon.png" },
+					"125%": { "normal": "resources/dark/icon@1.25x.png" },
+					"150%": { "normal": "resources/dark/icon@1.5x.png" },
+					"175%": { "normal": "resources/dark/icon@1.75x.png" },
+					"200%": { "normal": "resources/dark/icon@2x.png" }
+				}
+			],
+			"isViewer": false,
+			"EditorsSupport": [ "word" ],
+			"initDataType": "text",
+			"initData": "refresh",
+			"isVisual": false,
+			"isModal": false,
+			"isInsideMode": false,
+			"buttons": []
+		},
+		{
+			"description": "Add / Update Bibliography",
+			"descriptionLocale": {
+				"zh-CN": "插入或更新参考文献表 (Add/Edit Bibliography)"
+			},
+			"url": "index.html",
+			"icons": [ "resources/light/icon.png", "resources/light/icon@2x.png" ],
+			"icons2": [
+				{
+					"style": "light",
+					"100%": { "normal": "resources/light/icon.png" },
+					"125%": { "normal": "resources/light/icon@1.25x.png" },
+					"150%": { "normal": "resources/light/icon@1.5x.png" },
+					"175%": { "normal": "resources/light/icon@1.75x.png" },
+					"200%": { "normal": "resources/light/icon@2x.png" }
+				},
+				{
+					"style": "dark",
+					"100%": { "normal": "resources/dark/icon.png" },
+					"125%": { "normal": "resources/dark/icon@1.25x.png" },
+					"150%": { "normal": "resources/dark/icon@1.5x.png" },
+					"175%": { "normal": "resources/dark/icon@1.75x.png" },
+					"200%": { "normal": "resources/dark/icon@2x.png" }
+				}
+			],
+			"isViewer": false,
+			"EditorsSupport": [ "word" ],
+			"initDataType": "text",
+			"initData": "bibliography",
+			"isVisual": false,
+			"isModal": false,
+			"isInsideMode": false,
+			"buttons": []
+		},
+		{
+			"description": "Document Preferences",
+			"descriptionLocale": {
+				"zh-CN": "Zotero 文档偏好设置 (Document Preferences)"
+			},
+			"url": "index.html",
+			"icons": [ "resources/light/icon.png", "resources/light/icon@2x.png" ],
+			"icons2": [
+				{
+					"style": "light",
+					"100%": { "normal": "resources/light/icon.png" },
+					"125%": { "normal": "resources/light/icon@1.25x.png" },
+					"150%": { "normal": "resources/light/icon@1.5x.png" },
+					"175%": { "normal": "resources/light/icon@1.75x.png" },
+					"200%": { "normal": "resources/light/icon@2x.png" }
+				},
+				{
+					"style": "dark",
+					"100%": { "normal": "resources/dark/icon.png" },
+					"125%": { "normal": "resources/dark/icon@1.25x.png" },
+					"150%": { "normal": "resources/dark/icon@1.5x.png" },
+					"175%": { "normal": "resources/dark/icon@1.75x.png" },
+					"200%": { "normal": "resources/dark/icon@2x.png" }
+				}
+			],
+			"isViewer": false,
+			"EditorsSupport": [ "word" ],
+			"initDataType": "text",
+			"initData": "preferences",
+			"isVisual": true,
+			"isModal": true,
+			"isInsideMode": false,
+			"buttons": [],
+			"size": [ 720, 560 ]
+		},
+		{
+			"description": "Unlink Citations",
+			"descriptionLocale": {
+				"zh-CN": "解除引文关联转为纯文本 (Unlink Citations)"
+			},
+			"url": "index.html",
+			"icons": [ "resources/light/icon.png", "resources/light/icon@2x.png" ],
+			"icons2": [
+				{
+					"style": "light",
+					"100%": { "normal": "resources/light/icon.png" },
+					"125%": { "normal": "resources/light/icon@1.25x.png" },
+					"150%": { "normal": "resources/light/icon@1.5x.png" },
+					"175%": { "normal": "resources/light/icon@1.75x.png" },
+					"200%": { "normal": "resources/light/icon@2x.png" }
+				},
+				{
+					"style": "dark",
+					"100%": { "normal": "resources/dark/icon.png" },
+					"125%": { "normal": "resources/dark/icon@1.25x.png" },
+					"150%": { "normal": "resources/dark/icon@1.5x.png" },
+					"175%": { "normal": "resources/dark/icon@1.75x.png" },
+					"200%": { "normal": "resources/dark/icon@2x.png" }
+				}
+			],
+			"isViewer": false,
+			"EditorsSupport": [ "word" ],
+			"initDataType": "text",
+			"initData": "unlink",
+			"isVisual": false,
+			"isModal": false,
+			"isInsideMode": false,
+			"buttons": []
 		}
 	]
 }
