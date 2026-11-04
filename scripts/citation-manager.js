@@ -477,78 +477,76 @@ var CitationManager = (function () {
      * and strictly defaults to Times New Roman.
      */
     function insertBibliography(style) {
-        return getAllCitationFields().then(function (fields) {
-            if (!fields.length) {
-                throw new Error("No citations found in document. Insert at least one citation first.");
+        return hasBibliographyControl().then(function (hasBib) {
+            if (hasBib) {
+                // Bibliography exists -> Perform full on-demand live refresh across document!
+                // Re-reads all items fresh from Zotero to sync any background edits before submission!
+                return reformatDocumentStyle(style);
             }
 
-            var keysSet = {};
-            fields.forEach(function (f) {
-                (f.citationItems || []).forEach(function (it) {
-                    if (it.id) keysSet[it.id] = true;
+            return getAllCitationFields().then(function (fields) {
+                if (!fields.length) {
+                    throw new Error("No citations found in document. Insert at least one citation first.");
+                }
+
+                var keysSet = {};
+                fields.forEach(function (f) {
+                    (f.citationItems || []).forEach(function (it) {
+                        if (it.id) keysSet[it.id] = true;
+                    });
                 });
-            });
-            var keys = Object.keys(keysSet);
-            if (!keys.length) {
-                throw new Error("No valid citation keys found.");
-            }
+                var keys = Object.keys(keysSet);
+                if (!keys.length) {
+                    throw new Error("No valid citation keys found.");
+                }
 
-            return ZoteroAPI.getBibliography(keys, 0, style);
-        }).then(function (htmlBib) {
-            if (!htmlBib) {
-                throw new Error("Failed to generate bibliography from Zotero.");
-            }
-
-            var entries = parseBibHtml(htmlBib);
-            if (!entries.length) {
-                throw new Error("No bibliography entries could be parsed.");
-            }
-
-            return new Promise(function (resolve) {
-                window.Asc.scope.bibEntries = entries;
-
-                window.Asc.plugin.callCommand(function () {
-                    var oDocument = Api.GetDocument();
-                    var entries = Asc.scope.bibEntries;
-
-                    var oBlockLvlSdt = null;
-                    var controls = oDocument.GetContentControlsByTag("ZOTERO_BIBLIOGRAPHY");
-
-                    if (controls && controls.length > 0) {
-                        oBlockLvlSdt = controls[0];
-                        oBlockLvlSdt.RemoveAllElements();
-                    } else {
-                        oBlockLvlSdt = Api.CreateBlockLvlSdt();
-                        oBlockLvlSdt.SetTag("ZOTERO_BIBLIOGRAPHY");
-                        oBlockLvlSdt.SetAlias("Zotero Bibliography");
+                return ZoteroAPI.getBibliography(keys, 0, style).then(function (htmlBib) {
+                    if (!htmlBib) {
+                        throw new Error("Failed to generate bibliography from Zotero.");
                     }
 
-                    for (var i = 0; i < entries.length; i++) {
-                        var oParagraph = Api.CreateParagraph();
-
-                        oParagraph.SetFontFamily("Times New Roman");
-                        oParagraph.SetIndLeft(720);        // 0.5" / 1.27 cm Left Indent
-                        oParagraph.SetIndFirstLine(-720);  // 悬挂缩进 (Hanging Indent)
-                        oParagraph.SetSpacingAfter(140);   // ~7pt space
-                        oParagraph.SetSpacingLine(276, "multiple");
-
-                        var runs = entries[i];
-                        for (var j = 0; j < runs.length; j++) {
-                            var rData = runs[j];
-                            var oRun = oParagraph.AddText(rData.text);
-                            oRun.SetFontFamily("Times New Roman");
-                            if (rData.italic) oRun.SetItalic(true);
-                            if (rData.bold) oRun.SetBold(true);
-                        }
-
-                        oBlockLvlSdt.AddElement(oParagraph);
+                    var entries = parseBibHtml(htmlBib);
+                    if (!entries.length) {
+                        throw new Error("No bibliography entries could be parsed.");
                     }
 
-                    if (!controls || controls.length === 0) {
-                        oDocument.InsertContent([oBlockLvlSdt]);
-                    }
-                }, false, true, function () {
-                    resolve(entries.length);
+                    return new Promise(function (resolve) {
+                        window.Asc.scope.bibEntries = entries;
+
+                        window.Asc.plugin.callCommand(function () {
+                            var oDocument = Api.GetDocument();
+                            var entries = Asc.scope.bibEntries;
+
+                            var oBlockLvlSdt = Api.CreateBlockLvlSdt();
+                            oBlockLvlSdt.SetTag("ZOTERO_BIBLIOGRAPHY");
+                            oBlockLvlSdt.SetAlias("Zotero Bibliography");
+
+                            for (var i = 0; i < entries.length; i++) {
+                                var oParagraph = Api.CreateParagraph();
+
+                                oParagraph.SetFontFamily("Times New Roman");
+                                oParagraph.SetIndLeft(720);        // 0.5" / 1.27 cm Left Indent
+                                oParagraph.SetIndFirstLine(-720);  // 悬挂缩进 (Hanging Indent)
+                                oParagraph.SetSpacingAfter(140);   // ~7pt space
+                                oParagraph.SetSpacingLine(276, "multiple");
+
+                                var runs = entries[i];
+                                for (var j = 0; j < runs.length; j++) {
+                                    var rData = runs[j];
+                                    var oRun = oParagraph.AddText(rData.text);
+                                    oRun.SetFontFamily("Times New Roman");
+                                    if (rData.italic) oRun.SetItalic(true);
+                                    if (rData.bold) oRun.SetBold(true);
+                                }
+
+                                oBlockLvlSdt.AddElement(oParagraph);
+                            }
+
+                            oDocument.InsertContent([oBlockLvlSdt]);
+                        }, false, true, function () {
+                            resolve(entries.length);
+                        });
+                    });
                 });
             });
         });

@@ -840,11 +840,11 @@
     function handleInsertBibliography() {
         var isUpdate = (els.btnBibliography.textContent.indexOf("Update") !== -1);
         els.btnBibliography.disabled = true;
-        els.btnBibliography.textContent = isUpdate ? "Updating..." : "Formatting...";
+        els.btnBibliography.textContent = isUpdate ? "Syncing from Zotero..." : "Formatting...";
 
         CitationManager.insertBibliography(state.activeStyle).then(function (count) {
             updateBibButtonState(true);
-            showToast(isUpdate ? "Bibliography updated (" + count + " entries)!" : "Bibliography inserted in Times New Roman with hanging indents (" + count + " entries)!");
+            showToast(isUpdate ? "Synchronized citations & updated bibliography from Zotero!" : "Bibliography inserted in Times New Roman with hanging indents (" + count + " entries)!");
             setTimeout(closeModal, 600);
         }).catch(function (err) {
             els.btnBibliography.disabled = false;
