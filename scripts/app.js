@@ -556,6 +556,7 @@
 
         els.searchInput.placeholder = "Type to add another reference to this cluster...";
         els.searchInput.focus();
+        performSearch("");
     }
 
     function setFormatMode(mode) {
@@ -727,7 +728,7 @@
             if (thisSeq !== activeSearchSeq) return; // Discard superseded response!
 
             state.searchResults = items || [];
-            state.selectedIndex = state.searchResults.length > 0 ? 0 : -1;
+            state.selectedIndex = (state.mode === "edit" && !query) ? -1 : (state.searchResults.length > 0 ? 0 : -1);
             renderResults();
             updateLivePreview();
         }).catch(function () {
